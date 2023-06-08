@@ -13,6 +13,9 @@
 # limitations under the License.
 """Implementation of macro-half of py_binary rule."""
 
+load(":common/python/py_binary_bazel.bzl", py_binary_rule = "py_binary")
+load(":common/python/common_bazel.bzl", "convert_legacy_create_init_to_int")
+
 def py_binary(**kwargs):
-    _ = kwargs  # @unused
-    pass
+    convert_legacy_create_init_to_int(kwargs)
+    py_binary_rule(**kwargs)

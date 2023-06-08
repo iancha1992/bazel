@@ -58,7 +58,8 @@ public final class SingleJarActionBuilder {
       JavaSemantics semantics,
       NestedSet<Artifact> resources,
       NestedSet<Artifact> resourceJars,
-      Artifact outputJar) {
+      Artifact outputJar,
+      String execGroup) {
     createSourceJarAction(
         ruleContext,
         ruleContext,
@@ -66,7 +67,8 @@ public final class SingleJarActionBuilder {
         resources,
         resourceJars,
         outputJar,
-        JavaToolchainProvider.from(ruleContext));
+        JavaToolchainProvider.from(ruleContext),
+        execGroup);
   }
 
   /**
@@ -86,7 +88,8 @@ public final class SingleJarActionBuilder {
       NestedSet<Artifact> resources,
       NestedSet<Artifact> resourceJars,
       Artifact outputJar,
-      JavaToolchainProvider toolchainProvider) {
+      JavaToolchainProvider toolchainProvider,
+      String execGroup) {
     requireNonNull(resourceJars);
     requireNonNull(outputJar);
     if (!resources.isEmpty()) {
@@ -102,7 +105,8 @@ public final class SingleJarActionBuilder {
                 sourceJarCommandLine(outputJar, semantics, resources, resourceJars),
                 ParamFileInfo.builder(ParameterFileType.SHELL_QUOTED).setUseAlways(true).build())
             .setProgressMessage("Building source jar %s", outputJar.prettyPrint())
-            .setMnemonic("JavaSourceJar");
+            .setMnemonic("JavaSourceJar")
+            .setExecGroup(execGroup);
 
     actionRegistry.registerAction(builder.build(actionConstructionContext));
   }
@@ -142,7 +146,7 @@ public final class SingleJarActionBuilder {
       NestedSet<Artifact> resourceJars) {
     CustomCommandLine.Builder args = CustomCommandLine.builder();
     args.addExecPath("--output", outputJar);
-    args.addAll(SOURCE_JAR_COMMAND_LINE_ARGS);
+    args.addObject(SOURCE_JAR_COMMAND_LINE_ARGS);
     args.addExecPaths("--sources", resourceJars);
     if (!resources.isEmpty()) {
       args.add("--resources");

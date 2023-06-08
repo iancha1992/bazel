@@ -48,7 +48,6 @@ import com.google.devtools.build.lib.actions.SpawnExecutedEvent;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.TestExecException;
 import com.google.devtools.build.lib.analysis.PackageSpecificationProvider;
-import com.google.devtools.build.lib.analysis.SingleRunfilesSupplier;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.config.RunUnder;
 import com.google.devtools.build.lib.analysis.test.TestActionContext.AttemptGroup;
@@ -60,7 +59,6 @@ import com.google.devtools.build.lib.buildeventstream.TestFileNameConstants;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
-import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.server.FailureDetails.Execution.Code;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
@@ -97,7 +95,10 @@ import javax.annotation.Nullable;
 // Not final so that we can mock it in tests.
 public class TestRunnerAction extends AbstractAction
     implements NotifyOnActionCacheHit, CommandAction {
+
   public static final PathFragment COVERAGE_TMP_ROOT = PathFragment.create("_coverage");
+
+  private static final String UNDECLARED_OUTPUTS_ZIP_NAME = "outputs.zip";
 
   // Used for selecting subset of testcase / testmethods.
   private static final String TEST_BRIDGE_TEST_FILTER_ENV = "TESTBRIDGE_TEST_ONLY";
@@ -107,6 +108,7 @@ public class TestRunnerAction extends AbstractAction
 
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
 
+  private final RunfilesSupplier runfilesSupplier;
   private final Artifact testSetupScript;
   private final Artifact testXmlGeneratorScript;
   private final Artifact collectCoverageScript;
@@ -119,8 +121,6 @@ public class TestRunnerAction extends AbstractAction
   @Nullable private final PathFragment shExecutable;
   private final PathFragment splitLogsPath;
   private final PathFragment splitLogsDir;
-  private final PathFragment undeclaredOutputsDir;
-  private final PathFragment undeclaredOutputsZipPath;
   private final PathFragment undeclaredOutputsAnnotationsDir;
   private final PathFragment undeclaredOutputsManifestPath;
   private final PathFragment undeclaredOutputsAnnotationsPath;
@@ -137,6 +137,7 @@ public class TestRunnerAction extends AbstractAction
 
   private final Artifact coverageData;
   @Nullable private final Artifact coverageDirectory;
+  private final Artifact undeclaredOutputsDir;
   private final TestTargetProperties testProperties;
   private final TestTargetExecutionSettings executionSettings;
   private final int shardNum;
@@ -189,7 +190,7 @@ public class TestRunnerAction extends AbstractAction
   TestRunnerAction(
       ActionOwner owner,
       NestedSet<Artifact> inputs,
-      SingleRunfilesSupplier runfilesSupplier,
+      RunfilesSupplier runfilesSupplier,
       Artifact testSetupScript, // Must be in inputs
       Artifact testXmlGeneratorScript, // Must be in inputs
       @Nullable Artifact collectCoverageScript, // Must be in inputs, if not null
@@ -197,6 +198,7 @@ public class TestRunnerAction extends AbstractAction
       Artifact cacheStatus,
       Artifact coverageArtifact,
       @Nullable Artifact coverageDirectory,
+      Artifact undeclaredOutputsDir,
       TestTargetProperties testProperties,
       ActionEnvironment extraTestEnv,
       TestTargetExecutionSettings executionSettings,
@@ -212,12 +214,11 @@ public class TestRunnerAction extends AbstractAction
       PackageSpecificationProvider networkAllowlist) {
     super(
         owner,
-        /*tools=*/ NestedSetBuilder.emptySet(Order.STABLE_ORDER),
         inputs,
-        runfilesSupplier,
-        nonNullAsSet(testLog, cacheStatus, coverageArtifact, coverageDirectory),
-        configuration.getActionEnvironment());
+        nonNullAsSet(
+            testLog, cacheStatus, coverageArtifact, coverageDirectory, undeclaredOutputsDir));
     Preconditions.checkState((collectCoverageScript == null) == (coverageArtifact == null));
+    this.runfilesSupplier = runfilesSupplier;
     this.testSetupScript = testSetupScript;
     this.testXmlGeneratorScript = testXmlGeneratorScript;
     this.collectCoverageScript = collectCoverageScript;
@@ -227,6 +228,7 @@ public class TestRunnerAction extends AbstractAction
     this.cacheStatus = cacheStatus;
     this.coverageData = coverageArtifact;
     this.coverageDirectory = coverageDirectory;
+    this.undeclaredOutputsDir = undeclaredOutputsDir;
     this.shardNum = shardNum;
     this.runNumber = runNumber;
     this.testProperties = checkNotNull(testProperties);
@@ -249,8 +251,6 @@ public class TestRunnerAction extends AbstractAction
     this.splitLogsDir = baseDir.getChild("test.raw_splitlogs");
     // See note in {@link #getSplitLogsPath} on the choice of file name.
     this.splitLogsPath = splitLogsDir.getChild("test.splitlogs");
-    this.undeclaredOutputsDir = baseDir.getChild("test.outputs");
-    this.undeclaredOutputsZipPath = undeclaredOutputsDir.getChild("outputs.zip");
     this.undeclaredOutputsAnnotationsDir = baseDir.getChild("test.outputs_manifest");
     this.undeclaredOutputsManifestPath = undeclaredOutputsAnnotationsDir.getChild("MANIFEST");
     this.undeclaredOutputsAnnotationsPath = undeclaredOutputsAnnotationsDir.getChild("ANNOTATIONS");
@@ -299,9 +299,19 @@ public class TestRunnerAction extends AbstractAction
             // Note that splitLogsPath points to a file inside the splitLogsDir so it's not
             // necessary to delete it explicitly.
             splitLogsDir,
-            undeclaredOutputsDir,
+            getUndeclaredOutputsDir(),
             undeclaredOutputsAnnotationsDir,
             baseDir.getRelative("test_attempts"));
+  }
+
+  @Override
+  public final RunfilesSupplier getRunfilesSupplier() {
+    return runfilesSupplier;
+  }
+
+  @Override
+  public final ActionEnvironment getEnvironment() {
+    return configuration.getActionEnvironment();
   }
 
   public RunfilesSupplier getLcovMergerRunfilesSupplier() {
@@ -333,6 +343,10 @@ public class TestRunnerAction extends AbstractAction
     return true;
   }
 
+  public boolean checkShardingSupport() {
+    return testConfiguration.checkShardingSupport();
+  }
+
   public List<ActionInput> getSpawnOutputs() {
     final List<ActionInput> outputs = new ArrayList<>();
     outputs.add(ActionInputHelper.fromPath(getXmlOutputPath()));
@@ -347,7 +361,7 @@ public class TestRunnerAction extends AbstractAction
     if (testConfiguration.getZipUndeclaredTestOutputs()) {
       outputs.add(ActionInputHelper.fromPath(getUndeclaredOutputsZipPath()));
     } else {
-      outputs.add(ActionInputHelper.fromPathToDirectory(getUndeclaredOutputsDir()));
+      outputs.add(undeclaredOutputsDir);
     }
     outputs.add(ActionInputHelper.fromPath(getUndeclaredOutputsManifestPath()));
     outputs.add(ActionInputHelper.fromPath(getUndeclaredOutputsAnnotationsPath()));
@@ -483,11 +497,6 @@ public class TestRunnerAction extends AbstractAction
     // Note: isVolatile must return true if executeUnconditionally can ever return true
     // for this instance.
     return computeExecuteUnconditionallyFromTestStatus();
-  }
-
-  @Override // Tighten return type.
-  public SingleRunfilesSupplier getRunfilesSupplier() {
-    return (SingleRunfilesSupplier) super.getRunfilesSupplier();
   }
 
   @Override
@@ -676,7 +685,7 @@ public class TestRunnerAction extends AbstractAction
       env.put("TEST_RANDOM_SEED", Integer.toString(getRunNumber() + 1));
     }
     // TODO(b/184206260): Actually set TEST_RANDOM_SEED with random seed.
-    // The above TEST_RANDOM_SEED has histroically been set with the run number, but we should
+    // The above TEST_RANDOM_SEED has historically been set with the run number, but we should
     // explicitly set TEST_RUN_NUMBER to indicate the run number and actually set TEST_RANDOM_SEED
     // with a random seed. However, much code has come to depend on it being set to the run number
     // and this is an externally documented behavior. Modifying TEST_RANDOM_SEED should be done
@@ -721,7 +730,7 @@ public class TestRunnerAction extends AbstractAction
     }
     env.put("XML_OUTPUT_FILE", getXmlOutputPath().getPathString());
 
-    if (!isEnableRunfiles()) {
+    if (!configuration.runfilesEnabled()) {
       // If runfiles are disabled, tell remote-runtest.sh/local-runtest.sh about that.
       env.put("RUNFILES_MANIFEST_ONLY", "1");
     }
@@ -804,12 +813,12 @@ public class TestRunnerAction extends AbstractAction
   }
 
   public PathFragment getUndeclaredOutputsDir() {
-    return undeclaredOutputsDir;
+    return undeclaredOutputsDir.getExecPath();
   }
 
   /** Returns path to the optional zip file of undeclared test outputs. */
   public PathFragment getUndeclaredOutputsZipPath() {
-    return undeclaredOutputsZipPath;
+    return getUndeclaredOutputsDir().getChild(UNDECLARED_OUTPUTS_ZIP_NAME);
   }
 
   /** Returns path to the undeclared output manifest file. */
@@ -923,11 +932,6 @@ public class TestRunnerAction extends AbstractAction
     return workspaceName;
   }
 
-  @Override
-  public Artifact getPrimaryOutput() {
-    return testLog;
-  }
-
   public PackageSpecificationProvider getNetworkAllowlist() {
     return networkAllowlist;
   }
@@ -991,10 +995,10 @@ public class TestRunnerAction extends AbstractAction
 
   @Override
   public ImmutableSet<Artifact> getMandatoryOutputs() {
-    return getOutputs();
+    return ImmutableSet.copyOf(getOutputs());
   }
 
-  public Artifact getTestSetupScript() {
+  Artifact getTestSetupScript() {
     return testSetupScript;
   }
 
@@ -1008,16 +1012,8 @@ public class TestRunnerAction extends AbstractAction
   }
 
   @Nullable
-  public PathFragment getShExecutableMaybe() {
+  PathFragment getShExecutableMaybe() {
     return shExecutable;
-  }
-
-  public ImmutableMap<String, String> getLocalShellEnvironment() {
-    return configuration.getLocalShellEnvironment();
-  }
-
-  public boolean isEnableRunfiles() {
-    return configuration.runfilesEnabled();
   }
 
   @Override
@@ -1079,12 +1075,12 @@ public class TestRunnerAction extends AbstractAction
 
     /** Returns path to the optional zip file of undeclared test outputs. */
     public Path getUndeclaredOutputsZipPath() {
-      return getPath(undeclaredOutputsZipPath);
+      return getUndeclaredOutputsDir().getChild(UNDECLARED_OUTPUTS_ZIP_NAME);
     }
 
     /** Returns path to the directory to hold undeclared test outputs. */
     public Path getUndeclaredOutputsDir() {
-      return getPath(undeclaredOutputsDir);
+      return getPath(undeclaredOutputsDir.getExecPath());
     }
 
     /** Returns path to the directory to hold undeclared output annotations parts. */

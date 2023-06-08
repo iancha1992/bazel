@@ -83,6 +83,7 @@ public final class LtoBackendArtifacts implements LtoBackendArtifactsApi<Artifac
   private Artifact dwoFile;
 
   LtoBackendArtifacts(
+      StarlarkThread thread,
       RuleErrorConsumer ruleErrorConsumer,
       BuildOptions buildOptions,
       CppConfiguration cppConfiguration,
@@ -99,11 +100,9 @@ public final class LtoBackendArtifacts implements LtoBackendArtifactsApi<Artifac
       boolean usePic,
       boolean generateDwo,
       List<String> userCompileFlags)
-      throws RuleErrorException {
+      throws RuleErrorException, InterruptedException {
     this.bitcodeFile = bitcodeFile;
-    PathFragment obj =
-        ltoOutputRootPrefix.getRelative(
-            bitcodeFile.getOutputDirRelativePath(configuration.isSiblingRepositoryLayout()));
+    PathFragment obj = ltoOutputRootPrefix.getRelative(bitcodeFile.getExecPath());
 
     objectFile =
         linkArtifactFactory.create(actionConstructionContext, repositoryName, configuration, obj);
@@ -121,6 +120,7 @@ public final class LtoBackendArtifacts implements LtoBackendArtifactsApi<Artifac
             FileSystemUtils.appendExtension(obj, ".thinlto.bc"));
 
     scheduleLtoBackendAction(
+        thread,
         ruleErrorConsumer,
         buildOptions,
         cppConfiguration,
@@ -139,6 +139,7 @@ public final class LtoBackendArtifacts implements LtoBackendArtifactsApi<Artifac
 
   // Interface to create an LTO backend that does not perform any cross-module optimization.
   public LtoBackendArtifacts(
+      StarlarkThread thread,
       RuleErrorConsumer ruleErrorConsumer,
       BuildOptions buildOptions,
       CppConfiguration cppConfiguration,
@@ -154,18 +155,17 @@ public final class LtoBackendArtifacts implements LtoBackendArtifactsApi<Artifac
       boolean usePic,
       boolean generateDwo,
       List<String> userCompileFlags)
-      throws RuleErrorException {
+      throws RuleErrorException, InterruptedException {
     this.bitcodeFile = bitcodeFile;
 
-    PathFragment obj =
-        ltoOutputRootPrefix.getRelative(
-            bitcodeFile.getOutputDirRelativePath(configuration.isSiblingRepositoryLayout()));
+    PathFragment obj = ltoOutputRootPrefix.getRelative(bitcodeFile.getExecPath());
     objectFile =
         linkArtifactFactory.create(actionConstructionContext, repositoryName, configuration, obj);
     imports = null;
     index = null;
 
     scheduleLtoBackendAction(
+        thread,
         ruleErrorConsumer,
         buildOptions,
         cppConfiguration,
@@ -179,7 +179,7 @@ public final class LtoBackendArtifacts implements LtoBackendArtifactsApi<Artifac
         configuration,
         linkArtifactFactory,
         userCompileFlags,
-        /*bitcodeFiles=*/ null);
+        /* bitcodeFiles= */ null);
   }
 
   public Artifact getObjectFile() {
@@ -218,6 +218,7 @@ public final class LtoBackendArtifacts implements LtoBackendArtifactsApi<Artifac
   }
 
   private void scheduleLtoBackendAction(
+      StarlarkThread thread,
       RuleErrorConsumer ruleErrorConsumer,
       BuildOptions buildOptions,
       CppConfiguration cppConfiguration,
@@ -232,7 +233,7 @@ public final class LtoBackendArtifacts implements LtoBackendArtifactsApi<Artifac
       LinkArtifactFactory linkArtifactFactory,
       List<String> userCompileFlags,
       @Nullable BitcodeFiles bitcodeFiles)
-      throws RuleErrorException {
+      throws RuleErrorException, InterruptedException {
     LtoBackendAction.Builder builder = new LtoBackendAction.Builder();
 
     builder.addInput(bitcodeFile);
@@ -257,8 +258,16 @@ public final class LtoBackendArtifacts implements LtoBackendArtifactsApi<Artifac
     builder.setProgressMessage("LTO Backend Compile %s", objectFile.getExecPath());
     builder.setMnemonic("CcLtoBackendCompile");
 
+    CcToolchainVariables ccToolchainVariables;
+
+    try {
+      ccToolchainVariables = ccToolchain.getBuildVariables(thread, buildOptions, cppConfiguration);
+    } catch (EvalException e) {
+      throw new RuleErrorException(e.getMessage());
+    }
+
     CcToolchainVariables.Builder buildVariablesBuilder =
-        CcToolchainVariables.builder(ccToolchain.getBuildVariables(buildOptions, cppConfiguration));
+        CcToolchainVariables.builder(ccToolchainVariables);
     if (index != null) {
       buildVariablesBuilder.addStringVariable("thinlto_index", index.getExecPath().toString());
     } else {

@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.skyframe.actiongraph.v2;
 
 import static com.google.devtools.build.lib.skyframe.actiongraph.v2.AqueryOutputHandler.OutputType.BINARY;
+import static com.google.devtools.build.lib.skyframe.actiongraph.v2.AqueryOutputHandler.OutputType.DELIMITED_BINARY;
 import static com.google.devtools.build.lib.skyframe.actiongraph.v2.AqueryOutputHandler.OutputType.TEXT;
 
 import com.google.common.base.Preconditions;
@@ -26,24 +27,36 @@ import com.google.devtools.build.lib.analysis.AnalysisProtosV2.DepSetOfFiles;
 import com.google.devtools.build.lib.analysis.AnalysisProtosV2.PathFragment;
 import com.google.devtools.build.lib.analysis.AnalysisProtosV2.RuleClass;
 import com.google.devtools.build.lib.analysis.AnalysisProtosV2.Target;
+import com.google.devtools.build.lib.skyframe.actiongraph.v2.PrintTask.ProtoPrintTask;
+import com.google.devtools.build.lib.skyframe.actiongraph.v2.PrintTask.StreamedProtoPrintTask;
+import com.google.devtools.build.lib.skyframe.actiongraph.v2.PrintTask.TextProtoPrintTask;
 import com.google.protobuf.CodedOutputStream;
 import com.google.protobuf.Message;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.PrintStream;
 
-/** Manages the various streamed output channels of aquery. This does not support JSON format. */
+/**
+ * Manages the various streamed output channels of aquery. This does not support JSON format.
+ * TODO(b/274595070) Remove this class after the flag flip.
+ */
 public class StreamedOutputHandler implements AqueryOutputHandler {
   private final OutputType outputType;
-  private final CodedOutputStream outputStream;
+  private final OutputStream outputStream;
+  private final CodedOutputStream codedOutputStream;
   private final PrintStream printStream;
 
   public StreamedOutputHandler(
-      OutputType outputType, CodedOutputStream outputStream, PrintStream printStream) {
+      OutputType outputType,
+      OutputStream outputStream,
+      CodedOutputStream codedOutputStream,
+      PrintStream printStream) {
     this.outputType = outputType;
     Preconditions.checkArgument(
-        outputType == BINARY || outputType == TEXT,
-        "Only proto and textproto outputs should be streamed.");
+        outputType == BINARY || outputType == DELIMITED_BINARY || outputType == TEXT,
+        "Only proto, streamed_proto, textproto outputs should be streamed.");
     this.outputStream = outputStream;
+    this.codedOutputStream = codedOutputStream;
     this.printStream = printStream;
   }
 
@@ -97,10 +110,13 @@ public class StreamedOutputHandler implements AqueryOutputHandler {
       throws IOException {
     switch (outputType) {
       case BINARY:
-        outputStream.writeMessage(fieldNumber, message);
+        ProtoPrintTask.print(codedOutputStream, message, fieldNumber);
+        break;
+      case DELIMITED_BINARY:
+        StreamedProtoPrintTask.print(outputStream, message, fieldNumber);
         break;
       case TEXT:
-        printStream.print(messageLabel + " {\n" + message + "}\n");
+        TextProtoPrintTask.print(printStream, message, messageLabel);
         break;
       default:
         throw new IllegalStateException("Unknown outputType " + outputType.formatName());
@@ -110,6 +126,7 @@ public class StreamedOutputHandler implements AqueryOutputHandler {
   @Override
   public void close() throws IOException {
     outputStream.flush();
+    codedOutputStream.flush();
     printStream.flush();
   }
 }

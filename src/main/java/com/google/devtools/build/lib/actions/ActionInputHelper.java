@@ -108,32 +108,6 @@ public final class ActionInputHelper {
   }
 
   /**
-   * Creates an ActionInput with just the given relative path (which must point to a directory) and
-   * no digest.
-   *
-   * @param path the relative path of the input.
-   * @return a ActionInput.
-   */
-  public static ActionInput fromPathToDirectory(PathFragment path) {
-    return new BasicActionInput() {
-      @Override
-      public String getExecPathString() {
-        return path.getPathString();
-      }
-
-      @Override
-      public PathFragment getExecPath() {
-        return path;
-      }
-
-      @Override
-      public boolean isDirectory() {
-        return true;
-      }
-    };
-  }
-
-  /**
    * Expands middleman and tree artifacts in a sequence of {@link ActionInput}s.
    *
    * <p>The constructed list never contains middleman artifacts. If {@code keepEmptyTreeArtifacts}
@@ -148,16 +122,14 @@ public final class ActionInputHelper {
       ArtifactExpander artifactExpander,
       boolean keepEmptyTreeArtifacts) {
     List<ActionInput> result = new ArrayList<>();
-    List<Artifact> containedArtifacts = new ArrayList<>();
     for (ActionInput input : inputs.toList()) {
-      if (!(input instanceof Artifact)) {
+      if (input instanceof Artifact) {
+        Artifact.addExpandedArtifact(
+            (Artifact) input, result, artifactExpander, keepEmptyTreeArtifacts);
+      } else {
         result.add(input);
-        continue;
       }
-      containedArtifacts.add((Artifact) input);
     }
-    Artifact.addExpandedArtifacts(
-        containedArtifacts, result, artifactExpander, keepEmptyTreeArtifacts);
     return result;
   }
 

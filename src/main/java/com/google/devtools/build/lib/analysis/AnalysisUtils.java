@@ -22,7 +22,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Multimap;
-import com.google.devtools.build.lib.analysis.config.BuildConfigurationCollection;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.config.ConfigurationResolver;
 import com.google.devtools.build.lib.analysis.config.ConfigurationResolver.TopLevelTargetsAndConfigsResult;
@@ -181,9 +180,8 @@ public final class AnalysisUtils {
    *
    * <p>Preserves the original input ordering.
    */
-  // Keep this in sync with PrepareAnalysisPhaseFunction.
   public static TopLevelTargetsAndConfigsResult getTargetsWithConfigs(
-      BuildConfigurationCollection configurations,
+      BuildConfigurationValue targetConfiguration,
       Collection<Target> targets,
       ExtendedEventHandler eventHandler,
       ConfiguredRuleClassProvider ruleClassProvider,
@@ -191,7 +189,6 @@ public final class AnalysisUtils {
       throws InvalidConfigurationException, InterruptedException {
     // We use a set here to remove duplicate nodes; this can happen for input files and package
     // groups.
-    BuildConfigurationValue targetConfiguration = configurations.getTargetConfiguration();
     ImmutableSet<TargetAndConfiguration> nodes =
         targets.stream()
             .map(target -> new TargetAndConfiguration(target, targetConfiguration))

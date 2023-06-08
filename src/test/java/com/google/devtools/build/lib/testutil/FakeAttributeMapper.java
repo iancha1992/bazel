@@ -16,15 +16,12 @@ package com.google.devtools.build.lib.testutil;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.Attribute;
 import com.google.devtools.build.lib.packages.AttributeMap;
 import com.google.devtools.build.lib.packages.DependencyFilter;
 import com.google.devtools.build.lib.packages.Type;
-import com.google.errorprone.annotations.CanIgnoreReturnValue;
-import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -45,12 +42,7 @@ public class FakeAttributeMapper implements AttributeMap {
 
   @Override
   public Label getLabel() {
-    return Label.parseAbsoluteUnchecked("//fake:rule");
-  }
-
-  @Override
-  public String getRuleClassName() {
-    return "fake_rule";
+    return Label.parseCanonicalUnchecked("//fake:rule");
   }
 
   @Override
@@ -137,11 +129,6 @@ public class FakeAttributeMapper implements AttributeMap {
     return "???";
   }
 
-  @Override
-  public ImmutableList<String> getPackageDefaultCopts() {
-    return ImmutableList.of();
-  }
-
   public static FakeAttributeMapper empty() {
     return builder().build();
   }
@@ -160,12 +147,6 @@ public class FakeAttributeMapper implements AttributeMap {
 
     private Builder() {}
 
-    @CanIgnoreReturnValue
-    public Builder withStringList(String attribute, List<String> value) {
-      mapBuilder.put(attribute, FakeAttributeMapperEntry.forStringList(value));
-      return this;
-    }
-
     public FakeAttributeMapper build() {
       return new FakeAttributeMapper(mapBuilder.buildOrThrow());
     }
@@ -178,10 +159,6 @@ public class FakeAttributeMapper implements AttributeMap {
     private FakeAttributeMapperEntry(Type<T> type, T value) {
       this.type = type;
       this.value = value;
-    }
-
-    private static FakeAttributeMapperEntry<List<String>> forStringList(List<String> list) {
-      return new FakeAttributeMapperEntry<>(Type.STRING_LIST, list);
     }
 
     private <U> U validateAndGet(Type<U> otherType) {

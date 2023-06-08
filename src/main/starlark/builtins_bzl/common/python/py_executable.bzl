@@ -16,13 +16,15 @@
 load(":common/cc/cc_helper.bzl", "cc_helper")
 load(
     ":common/python/common.bzl",
+    "TOOLCHAIN_TYPE",
+    "check_native_allowed",
+    "collect_imports",
     "collect_runfiles",
     "create_instrumented_files_info",
     "create_output_group_info",
     "create_py_info",
     "csv",
     "filter_to_py_srcs",
-    "is_bool",
     "union_attrs",
 )
 load(
@@ -36,18 +38,18 @@ load(
 )
 load(
     ":common/python/providers.bzl",
+    "PyCcLinkParamsProvider",
     "PyRuntimeInfo",
 )
 load(
     ":common/python/semantics.bzl",
+    "ALLOWED_MAIN_EXTENSIONS",
     "BUILD_DATA_SYMLINK_PATH",
+    "IS_BAZEL",
     "PY_RUNTIME_ATTR_NAME",
-    "PY_RUNTIME_FRAGMENT_ATTR_NAME",
-    "PY_RUNTIME_FRAGMENT_NAME",
-    "TOOLS_REPO",
 )
+load(":common/cc/cc_common.bzl", _cc_common = "cc_common")
 
-_cc_common = _builtins.toplevel.cc_common
 _py_builtins = _builtins.internal.py_builtins
 
 # Non-Google-specific attributes for executables
@@ -86,8 +88,11 @@ filename in `srcs`, `main` must be specified.
     allow_none = True,
 )
 
-def py_executable_impl(ctx, *, semantics, is_test, inherited_environment = []):
-    """Rule implementation for a Python executable.
+def py_executable_base_impl(ctx, *, semantics, is_test, inherited_environment = []):
+    """Base rule implementation for a Python executable.
+
+    Google and Bazel call this common base and apply customizations using the
+    semantics object.
 
     Args:
         ctx: The rule ctx
@@ -105,7 +110,7 @@ def py_executable_impl(ctx, *, semantics, is_test, inherited_environment = []):
     main_py = determine_main(ctx)
     direct_sources = filter_to_py_srcs(ctx.files.srcs)
     output_sources = semantics.maybe_precompile(ctx, direct_sources)
-    imports = semantics.get_imports(ctx)
+    imports = collect_imports(ctx, semantics)
     executable, files_to_build = _compute_outputs(ctx, output_sources)
 
     runtime_details = _get_runtime_details(ctx, semantics)
@@ -126,7 +131,7 @@ def py_executable_impl(ctx, *, semantics, is_test, inherited_environment = []):
         cc_details = cc_details,
         is_test = is_test,
     )
-    runfiles_details = _get_runfiles_for_binary(
+    runfiles_details = _get_base_runfiles_for_binary(
         ctx,
         executable = executable,
         extra_deps = extra_deps,
@@ -139,7 +144,7 @@ def py_executable_impl(ctx, *, semantics, is_test, inherited_environment = []):
         ],
         semantics = semantics,
     )
-    semantics.create_executable(
+    exec_result = semantics.create_executable(
         ctx,
         executable = executable,
         main_py = main_py,
@@ -150,6 +155,16 @@ def py_executable_impl(ctx, *, semantics, is_test, inherited_environment = []):
         native_deps_details = native_deps_details,
         runfiles_details = runfiles_details,
     )
+    files_to_build = depset(transitive = [
+        exec_result.extra_files_to_build,
+        files_to_build,
+    ])
+    extra_exec_runfiles = ctx.runfiles(transitive_files = files_to_build)
+    runfiles_details = struct(
+        default_runfiles = runfiles_details.default_runfiles.merge(extra_exec_runfiles),
+        data_runfiles = runfiles_details.data_runfiles.merge(extra_exec_runfiles),
+    )
+
     legacy_providers, modern_providers = _create_providers(
         ctx = ctx,
         executable = executable,
@@ -162,6 +177,7 @@ def py_executable_impl(ctx, *, semantics, is_test, inherited_environment = []):
         cc_info = cc_details.cc_info_for_propagating,
         inherited_environment = inherited_environment,
         semantics = semantics,
+        output_groups = exec_result.output_groups,
     )
     return struct(
         legacy_providers = legacy_providers,
@@ -171,47 +187,71 @@ def py_executable_impl(ctx, *, semantics, is_test, inherited_environment = []):
 def _validate_executable(ctx):
     if ctx.attr.python_version != "PY3":
         fail("It is not allowed to use Python 2")
+    check_native_allowed(ctx)
 
 def _compute_outputs(ctx, output_sources):
-    # TODO: Use .exe suffixed name for Windows
-    # TODO: Handle --build_python_zip flag
-    executable = ctx.actions.declare_file(ctx.label.name)
+    # TODO: This should use the configuration instead of the Bazel OS.
+    if _py_builtins.get_current_os_name() == "windows":
+        executable = ctx.actions.declare_file(ctx.label.name + ".exe")
+    else:
+        executable = ctx.actions.declare_file(ctx.label.name)
 
     # TODO(b/208657718): Remove output_sources from the default outputs
     # once the depot is cleaned up.
-    files_to_build = depset(direct = [executable] + output_sources)
-    return executable, files_to_build
+    return executable, depset([executable] + output_sources)
 
 def _get_runtime_details(ctx, semantics):
-    # TODO: Google and Bazel have approximately the same logic, but Google gives
-    # preferences to the flag value, while Bazel gives preference to the
-    # toolchain value.
+    """Gets various information about the Python runtime to use.
 
-    # TODO(b/230428071): Remove this once Google's --python_binary flag is removed.
+    While most information comes from the toolchain, various legacy and
+    compatibility behaviors require computing some other information.
+
+    Args:
+        ctx: Rule ctx
+        semantics: A `BinarySemantics` struct; see `create_binary_semantics_struct`
+
+    Returns:
+        A struct; see inline-field comments of the return value for details.
+    """
+
+    # Bazel has --python_path. This flag has a computed default of "python" when
+    # its actual default is null (see
+    # BazelPythonConfiguration.java#getPythonPath). This flag is only used if
+    # toolchains are not enabled and `--python_top` isn't set. Note that Google
+    # used to have a variant of this named --python_binary, but it has since
+    # been removed.
+    #
     # TOOD(bazelbuild/bazel#7901): Remove this once --python_path flag is removed.
-    fragment = getattr(ctx.fragments, PY_RUNTIME_FRAGMENT_NAME)
-    flag_interpreter_path = getattr(fragment, PY_RUNTIME_FRAGMENT_ATTR_NAME)
 
-    if flag_interpreter_path:
-        effective_runtime = None
-        executable_interpreter_path = flag_interpreter_path
-        runtime_files = depset()
+    if IS_BAZEL:
+        flag_interpreter_path = ctx.fragments.bazel_py.python_path
+        toolchain_runtime, effective_runtime = _maybe_get_runtime_from_ctx(ctx)
+        if not effective_runtime:
+            # Clear these just in case
+            toolchain_runtime = None
+            effective_runtime = None
+
+    else:  # Google code path
+        flag_interpreter_path = None
+        toolchain_runtime, effective_runtime = _maybe_get_runtime_from_ctx(ctx)
+        if not effective_runtime:
+            fail("Unable to find Python runtime")
+
+    if effective_runtime:
+        direct = []  # List of files
+        transitive = []  # List of depsets
+        if effective_runtime.interpreter:
+            direct.append(effective_runtime.interpreter)
+            transitive.append(effective_runtime.files)
+
+        if ctx.configuration.coverage_enabled:
+            if effective_runtime.coverage_tool:
+                direct.append(effective_runtime.coverage_tool)
+            if effective_runtime.coverage_files:
+                transitive.append(effective_runtime.coverage_files)
+        runtime_files = depset(direct = direct, transitive = transitive)
     else:
-        attr_target = getattr(ctx.attr, PY_RUNTIME_ATTR_NAME)
-        if PyRuntimeInfo in attr_target:
-            effective_runtime = attr_target[PyRuntimeInfo]
-        else:
-            fail("Unable to get Python runtime from {}".format(attr_target))
-
-        if effective_runtime.interpreter_path:
-            runtime_files = depset()
-        elif effective_runtime.interpreter:
-            runtime_files = depset(
-                direct = [effective_runtime.interpreter],
-                transitive = [effective_runtime.files],
-            )
-        else:
-            fail("Unable to determine runtime info from {}".format(attr_target.label))
+        runtime_files = depset()
 
     executable_interpreter_path = semantics.get_interpreter_path(
         ctx,
@@ -220,13 +260,71 @@ def _get_runtime_details(ctx, semantics):
     )
 
     return struct(
-        toolchain_runtime = None,  # TODO: implement toolchain lookup
+        # Optional PyRuntimeInfo: The runtime found from toolchain resolution.
+        # This may be None because, within Google, toolchain resolution isn't
+        # yet enabled.
+        toolchain_runtime = toolchain_runtime,
+        # Optional PyRuntimeInfo: The runtime that should be used. When
+        # toolchain resolution is enabled, this is the same as
+        # `toolchain_resolution`. Otherwise, this probably came from the
+        # `_python_top` attribute that the Google implementation still uses.
+        # This is separate from `toolchain_runtime` because toolchain_runtime
+        # is propagated as a provider, while non-toolchain runtimes are not.
         effective_runtime = effective_runtime,
+        # str; Path to the Python interpreter to use for running the executable
+        # itself (not the bootstrap script). Either an absolute path (which
+        # means it is platform-specific), or a runfiles-relative path (which
+        # means the interpreter should be within `runtime_files`)
         executable_interpreter_path = executable_interpreter_path,
+        # runfiles: Additional runfiles specific to the runtime that should
+        # be included. For in-build runtimes, this shold include the interpreter
+        # and any supporting files.
         runfiles = ctx.runfiles(transitive_files = runtime_files),
     )
 
-def _get_runfiles_for_binary(
+def _maybe_get_runtime_from_ctx(ctx):
+    """Finds the PyRuntimeInfo from the toolchain or attribute, if available.
+
+    Returns:
+        2-tuple of toolchain_runtime, effective_runtime
+    """
+    if ctx.fragments.py.use_toolchains:
+        toolchain = ctx.toolchains[TOOLCHAIN_TYPE]
+
+        if not hasattr(toolchain, "py3_runtime"):
+            fail("Python toolchain field 'py3_runtime' is missing")
+        if not toolchain.py3_runtime:
+            fail("Python toolchain missing py3_runtime")
+        py3_runtime = toolchain.py3_runtime
+
+        # Hack around the fact that the autodetecting Python toolchain, which is
+        # automatically registered, does not yet support Windows. In this case,
+        # we want to return null so that _get_interpreter_path falls back on
+        # --python_path. See tools/python/toolchain.bzl.
+        # TODO(#7844): Remove this hack when the autodetecting toolchain has a
+        # Windows implementation.
+        if py3_runtime.interpreter_path == "/_magic_pyruntime_sentinel_do_not_use":
+            return None, None
+
+        if py3_runtime.python_version != "PY3":
+            fail("Python toolchain py3_runtime must be python_version=PY3, got {}".format(
+                py3_runtime.python_version,
+            ))
+        toolchain_runtime = toolchain.py3_runtime
+        effective_runtime = toolchain_runtime
+    else:
+        toolchain_runtime = None
+        attr_target = getattr(ctx.attr, PY_RUNTIME_ATTR_NAME)
+
+        # In Bazel, --python_top is null by default.
+        if attr_target and PyRuntimeInfo in attr_target:
+            effective_runtime = attr_target[PyRuntimeInfo]
+        else:
+            return None, None
+
+    return toolchain_runtime, effective_runtime
+
+def _get_base_runfiles_for_binary(
         ctx,
         *,
         executable,
@@ -234,6 +332,26 @@ def _get_runfiles_for_binary(
         files_to_build,
         extra_common_runfiles,
         semantics):
+    """Returns the set of runfiles necessary prior to executable creation.
+
+    NOTE: The term "common runfiles" refers to the runfiles that both the
+    default and data runfiles have in common.
+
+    Args:
+        ctx: The rule ctx.
+        executable: The main executable output.
+        extra_deps: List of Targets; additional targets whose runfiles
+            will be added to the common runfiles.
+        files_to_build: depset of File of the default outputs to add into runfiles.
+        extra_common_runfiles: List of runfiles; additional runfiles that
+            will be added to the common runfiles.
+        semantics: A `BinarySemantics` struct; see `create_binary_semantics_struct`.
+
+    Returns:
+        struct with attributes:
+        * default_runfiles: The default runfiles
+        * data_runfiles: The data runfiles
+    """
     common_runfiles = collect_runfiles(ctx, depset(
         direct = [executable],
         transitive = [files_to_build],
@@ -254,7 +372,7 @@ def _get_runfiles_for_binary(
     # Don't include build_data.txt in data runfiles. This allows binaries to
     # contain other binaries while still using the same fixed location symlink
     # for the build_data.txt file. Really, the fixed location symlink should be
-    # removed and another way found to location the underlying build data file.
+    # removed and another way found to locate the underlying build data file.
     data_runfiles = common_runfiles
 
     if is_stamping_enabled(ctx, semantics) and semantics.should_include_build_data(ctx):
@@ -316,7 +434,7 @@ def _write_build_data(ctx, central_uncachable_version_file, extra_write_build_da
     #   * Passing the transitive dependencies into the action requires passing
     #     the runfiles, but actions don't directly accept runfiles. While
     #     flattening the depsets can be deferred, accessing the
-    #     `runfiles.empty_filesnames` attribute will will invoke the empty
+    #     `runfiles.empty_filenames` attribute will will invoke the empty
     #     file supplier a second time, which is too much of a memory and CPU
     #     performance hit.
     #   * Some targets specify a directory in `data`, which is unsound, but
@@ -498,7 +616,7 @@ def determine_main(ctx):
     """
     if ctx.attr.main:
         proposed_main = ctx.attr.main.label.name
-        if not proposed_main.endswith(".py"):
+        if not proposed_main.endswith(tuple(ALLOWED_MAIN_EXTENSIONS)):
             fail("main must end in '.py'")
     else:
         if ctx.label.name.endswith(".py"):
@@ -573,9 +691,10 @@ def _create_providers(
         files_to_build,
         runfiles_details,
         imports,
-        cc_info = None,
+        cc_info,
         inherited_environment,
         runtime_details,
+        output_groups,
         semantics):
     """Creates the providers an executable should return.
 
@@ -596,28 +715,41 @@ def _create_providers(
             that should be inherited from the environment the executuble
             is run within.
         runtime_details: struct of runtime information; see _get_runtime_details()
+        output_groups: dict[str, depset[File]]; used to create OutputGroupInfo
         semantics: BinarySemantics struct; see create_binary_semantics()
 
     Returns:
-        A value that rules can return. i.e. a list of providers or
-        a struct of providers.
+        A two-tuple of:
+        1. A dict of legacy providers.
+        2. A list of modern providers.
     """
     providers = [
         DefaultInfo(
             executable = executable,
             files = files_to_build,
-            default_runfiles = runfiles_details.default_runfiles,
-            data_runfiles = runfiles_details.data_runfiles,
+            default_runfiles = _py_builtins.make_runfiles_respect_legacy_external_runfiles(
+                ctx,
+                runfiles_details.default_runfiles,
+            ),
+            data_runfiles = _py_builtins.make_runfiles_respect_legacy_external_runfiles(
+                ctx,
+                runfiles_details.data_runfiles,
+            ),
         ),
         create_instrumented_files_info(ctx),
         _create_run_environment_info(ctx, inherited_environment),
     ]
 
+    # TODO(b/265840007): Make this non-conditional once Google enables
+    # --incompatible_use_python_toolchains.
+    if runtime_details.toolchain_runtime:
+        providers.append(runtime_details.toolchain_runtime)
+
     # TODO(b/163083591): Remove the PyCcLinkParamsProvider once binaries-in-deps
     # are cleaned up.
     if cc_info:
         providers.append(
-            _py_builtins.new_py_cc_link_params_provider(cc_info = cc_info),
+            PyCcLinkParamsProvider(cc_info = cc_info),
         )
 
     py_info, deps_transitive_sources = create_py_info(
@@ -635,7 +767,7 @@ def _create_providers(
         )
 
     providers.append(py_info)
-    providers.append(create_output_group_info(py_info.transitive_sources))
+    providers.append(create_output_group_info(py_info.transitive_sources, output_groups))
 
     extra_legacy_providers, extra_providers = semantics.get_extra_providers(
         ctx,
@@ -643,7 +775,6 @@ def _create_providers(
         runtime_details = runtime_details,
     )
     providers.extend(extra_providers)
-
     return extra_legacy_providers, providers
 
 def _create_run_environment_info(ctx, inherited_environment):
@@ -660,43 +791,25 @@ def _create_run_environment_info(ctx, inherited_environment):
         inherited_environment = inherited_environment,
     )
 
-def create_executable_rule(*, attrs, **kwargs):
+def create_base_executable_rule(*, attrs, fragments = [], **kwargs):
     """Create a function for defining for Python binary/test targets.
 
     Args:
         attrs: Rule attributes
+        fragments: List of str; extra config fragments that are required.
         **kwargs: Additional args to pass onto `rule()`
 
     Returns:
         A rule function
     """
+    if "py" not in fragments:
+        # The list might be frozen, so use concatentation
+        fragments = fragments + ["py"]
     return rule(
         # TODO: add ability to remove attrs, i.e. for imports attr
         attrs = EXECUTABLE_ATTRS | attrs,
-        toolchains = ["@" + TOOLS_REPO + "//tools/python:toolchain_type"] + cc_helper.use_cpp_toolchain(),  # Google-specific
-        **kwargs
-    )
-
-def py_executable_macro(*, exec_rule, rule_is_test, name, paropts = [], **kwargs):
-    """Wrapper macro for common executable logic.
-
-    Args:
-      exec_rule: rule object; the underlying rule to call. It will be passed `kwargs` among
-          other attributes.
-      name: str, the target name
-      rule_is_test: bool, True if `exec_rule` has test=True, False if not.
-      paropts: list of str; additional flags that affect par building.
-      **kwargs: Additional args passed to `exec_rule`.
-    """
-
-    # The Java version of tristate attributes also accept boolean.
-    if is_bool(kwargs.get("stamp")):
-        kwargs["stamp"] = 1 if kwargs["stamp"] else 0
-    exec_rule(
-        name = name,
-        # Even though the binary rule doesn't generate the par, it still needs
-        # paropts so it can add them to the build_data.txt file.
-        paropts = paropts,  # Google-specific
+        toolchains = [TOOLCHAIN_TYPE] + cc_helper.use_cpp_toolchain(),
+        fragments = fragments,
         **kwargs
     )
 

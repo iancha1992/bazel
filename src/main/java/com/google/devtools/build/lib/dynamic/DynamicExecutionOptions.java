@@ -74,9 +74,13 @@ public class DynamicExecutionOptions extends OptionsBase {
       defaultValue = "null",
       allowMultiple = true,
       help =
-          "The local strategies, in order, to use for the given mnemonic. Passing"
-              + " 'local' as the mnemonic sets the default for unspecified mnemonics. Takes"
-              + " [mnemonic=]local_strategy[,local_strategy,...]")
+          "The local strategies, in order, to use for the given mnemonic - the first applicable "
+              + "strategy is used. For example, `worker,sandboxed` runs actions that support "
+              + "persistent workers using the worker strategy, and all others using the sandboxed "
+              + "strategy. If no mnemonic is given, the list of strategies is used as the "
+              + "fallback for all mnemonics. The default fallback list is `worker,sandboxed`, or"
+              + "`worker,sandboxed,standalone` if `experimental_local_lockfree_output` is set. "
+              + "Takes [mnemonic=]local_strategy[,local_strategy,...]")
   public List<Map.Entry<String, List<String>>> dynamicLocalStrategy;
 
   @Option(
@@ -87,9 +91,11 @@ public class DynamicExecutionOptions extends OptionsBase {
       defaultValue = "null",
       allowMultiple = true,
       help =
-          "The remote strategies to use for the given mnemonic. Passing 'remote'"
-              + " as the mnemonic sets the default for unspecified mnemonics. Takes"
-              + " [mnemonic=]remote_strategy[,remote_strategy,...]")
+          "The remote strategies, in order, to use for the given mnemonic - the first applicable "
+              + "strategy is used. If no mnemonic is given, the list of strategies is used as the "
+              + "fallback for all mnemonics. The default fallback list is `remote`, so this flag "
+              + "usually does not need to be set explicitly. "
+              + "Takes [mnemonic=]remote_strategy[,remote_strategy,...]")
   public List<Map.Entry<String, List<String>>> dynamicRemoteStrategy;
 
   @Option(
@@ -112,28 +118,6 @@ public class DynamicExecutionOptions extends OptionsBase {
       effectTags = {OptionEffectTag.UNKNOWN},
       defaultValue = "false")
   public boolean debugSpawnScheduler;
-
-  @Option(
-      name = "experimental_require_availability_info",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      defaultValue = "false",
-      help =
-          "If true, fail the build if there are actions that set requires-darwin but do not have"
-              + "Xcode availability-related execution requirements set.")
-  public boolean requireAvailabilityInfo;
-
-  @Option(
-      name = "experimental_availability_info_exempt",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      defaultValue = "Genrule,TestRunner",
-      converter = Converters.CommaSeparatedOptionListConverter.class,
-      help =
-          "A comma-separated list of mnemonics that are not required to have Xcode-related "
-              + "execution info if --experimental_require_availability_info=true. No-op if "
-              + "--experimental_require_availability_info=false.")
-  public List<String> availabilityInfoExempt;
 
   @Option(
       name = "experimental_dynamic_slow_remote_time",

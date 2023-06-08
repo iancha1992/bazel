@@ -43,7 +43,6 @@ import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.packages.AspectDescriptor;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.TargetAccessor;
 import com.google.devtools.build.lib.skyframe.RuleConfiguredTargetValue;
-import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
 import com.google.devtools.build.lib.util.CommandDescriptionForm;
 import com.google.devtools.build.lib.util.CommandFailureUtils;
 import com.google.devtools.build.lib.util.ShellEscaper;
@@ -70,11 +69,10 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
       ExtendedEventHandler eventHandler,
       AqueryOptions options,
       OutputStream out,
-      SkyframeExecutor skyframeExecutor,
-      TargetAccessor<KeyedConfiguredTargetValue> accessor,
+      TargetAccessor<ConfiguredTargetValue> accessor,
       AqueryActionFilter actionFilters,
       RepositoryMapping mainRepoMapping) {
-    super(eventHandler, options, out, skyframeExecutor, accessor);
+    super(eventHandler, options, out, accessor);
     this.actionFilters = actionFilters;
     this.mainRepoMapping = mainRepoMapping;
   }
@@ -85,15 +83,13 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
   }
 
   @Override
-  public void processOutput(Iterable<KeyedConfiguredTargetValue> partialResult)
+  public void processOutput(Iterable<ConfiguredTargetValue> partialResult)
       throws IOException, InterruptedException {
     try {
       // Enabling includeParamFiles should enable includeCommandline by default.
       options.includeCommandline |= options.includeParamFiles;
 
-      for (KeyedConfiguredTargetValue keyedConfiguredTargetValue : partialResult) {
-        ConfiguredTargetValue configuredTargetValue =
-            keyedConfiguredTargetValue.getConfiguredTargetValue();
+      for (ConfiguredTargetValue configuredTargetValue : partialResult) {
         if (!(configuredTargetValue instanceof RuleConfiguredTargetValue)) {
           // We have to include non-rule values in the graph to visit their dependencies, but they
           // don't have any actions to print out.
@@ -104,7 +100,7 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
           writeAction(action, printStream);
         }
         if (options.useAspects) {
-          for (AspectValue aspectValue : accessor.getAspectValues(keyedConfiguredTargetValue)) {
+          for (AspectValue aspectValue : accessor.getAspectValues(configuredTargetValue)) {
             if (aspectValue != null) {
               for (ActionAnalysisMetadata action : aspectValue.getActions()) {
                 writeAction(action, printStream);
@@ -143,7 +139,7 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
         .append('\n');
 
     if (actionOwner != null) {
-      BuildEvent configuration = actionOwner.getConfiguration();
+      BuildEvent configuration = actionOwner.getBuildConfigurationEvent();
       BuildEventStreamProtos.Configuration configProto =
           configuration.asStreamProto(/*context=*/ null).getConfiguration();
 
@@ -280,6 +276,7 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
                           .map(a -> escapeBytestringUtf8(a))
                           .collect(toImmutableList()),
                   /* environment= */ null,
+                  /* environmentVariablesToClear= */ null,
                   /* cwd= */ null,
                   action.getOwner().getConfigurationChecksum(),
                   action.getExecutionPlatform() == null
@@ -321,12 +318,14 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
     }
 
     if (action instanceof TemplateExpansionAction) {
+      TemplateExpansionAction templateExpansionAction = (TemplateExpansionAction) action;
       stringBuilder
           .append("  Template: ")
-          .append(((TemplateExpansionAction) action).getTemplate())
+          .append(AqueryUtils.getTemplateContent(templateExpansionAction))
           .append("\n");
+
       stringBuilder.append("  Substitutions: [\n");
-      for (Substitution substitution : ((TemplateExpansionAction) action).getSubstitutions()) {
+      for (Substitution substitution : templateExpansionAction.getSubstitutions()) {
         stringBuilder
             .append("    {")
             .append(substitution.getKey())

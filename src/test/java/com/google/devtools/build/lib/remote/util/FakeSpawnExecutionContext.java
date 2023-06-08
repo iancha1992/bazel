@@ -20,11 +20,10 @@ import com.google.devtools.build.lib.actions.ActionContext;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
+import com.google.devtools.build.lib.actions.ArtifactPathResolver;
 import com.google.devtools.build.lib.actions.ForbiddenActionInputException;
-import com.google.devtools.build.lib.actions.MetadataProvider;
+import com.google.devtools.build.lib.actions.InputMetadataProvider;
 import com.google.devtools.build.lib.actions.Spawn;
-import com.google.devtools.build.lib.actions.cache.MetadataInjector;
-import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.exec.SpawnInputExpander;
 import com.google.devtools.build.lib.exec.SpawnRunner.ProgressStatus;
 import com.google.devtools.build.lib.exec.SpawnRunner.SpawnExecutionContext;
@@ -48,35 +47,35 @@ public class FakeSpawnExecutionContext implements SpawnExecutionContext {
   }
 
   private final Spawn spawn;
-  private final MetadataProvider metadataProvider;
+  private final InputMetadataProvider inputMetadataProvider;
   private final Path execRoot;
   private final FileOutErr outErr;
   private final ClassToInstanceMap<ActionContext> actionContextRegistry;
   @Nullable private final RemoteActionFileSystem actionFileSystem;
 
   public FakeSpawnExecutionContext(
-      Spawn spawn, MetadataProvider metadataProvider, Path execRoot, FileOutErr outErr) {
-    this(spawn, metadataProvider, execRoot, outErr, ImmutableClassToInstanceMap.of(), null);
+      Spawn spawn, InputMetadataProvider inputMetadataProvider, Path execRoot, FileOutErr outErr) {
+    this(spawn, inputMetadataProvider, execRoot, outErr, ImmutableClassToInstanceMap.of(), null);
   }
 
   public FakeSpawnExecutionContext(
       Spawn spawn,
-      MetadataProvider metadataProvider,
+      InputMetadataProvider inputMetadataProvider,
       Path execRoot,
       FileOutErr outErr,
       ClassToInstanceMap<ActionContext> actionContextRegistry) {
-    this(spawn, metadataProvider, execRoot, outErr, actionContextRegistry, null);
+    this(spawn, inputMetadataProvider, execRoot, outErr, actionContextRegistry, null);
   }
 
   public FakeSpawnExecutionContext(
       Spawn spawn,
-      MetadataProvider metadataProvider,
+      InputMetadataProvider inputMetadataProvider,
       Path execRoot,
       FileOutErr outErr,
       ClassToInstanceMap<ActionContext> actionContextRegistry,
       @Nullable RemoteActionFileSystem actionFileSystem) {
     this.spawn = spawn;
-    this.metadataProvider = metadataProvider;
+    this.inputMetadataProvider = inputMetadataProvider;
     this.execRoot = execRoot;
     this.outErr = outErr;
     this.actionContextRegistry = actionContextRegistry;
@@ -108,8 +107,8 @@ public class FakeSpawnExecutionContext implements SpawnExecutionContext {
   }
 
   @Override
-  public MetadataProvider getMetadataProvider() {
-    return metadataProvider;
+  public InputMetadataProvider getInputMetadataProvider() {
+    return inputMetadataProvider;
   }
 
   @Override
@@ -123,6 +122,11 @@ public class FakeSpawnExecutionContext implements SpawnExecutionContext {
   }
 
   @Override
+  public ArtifactPathResolver getPathResolver() {
+    return ArtifactPathResolver.forExecRoot(execRoot);
+  }
+
+  @Override
   public Duration getTimeout() {
     return Duration.ZERO;
   }
@@ -133,20 +137,16 @@ public class FakeSpawnExecutionContext implements SpawnExecutionContext {
   }
 
   @Override
-  public SortedMap<PathFragment, ActionInput> getInputMapping(PathFragment baseDirectory)
+  public SortedMap<PathFragment, ActionInput> getInputMapping(
+      PathFragment baseDirectory, boolean willAccessRepeatedly)
       throws IOException, ForbiddenActionInputException {
     return getSpawnInputExpander()
-        .getInputMapping(spawn, this::artifactExpander, baseDirectory, metadataProvider);
+        .getInputMapping(spawn, this::artifactExpander, baseDirectory, inputMetadataProvider);
   }
 
   @Override
   public void report(ProgressStatus progress) {
     // Intentionally left empty.
-  }
-
-  @Override
-  public MetadataInjector getMetadataInjector() {
-    return ActionsTestUtil.THROWING_METADATA_HANDLER;
   }
 
   @Override

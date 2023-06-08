@@ -36,6 +36,7 @@ import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.config.CompilationMode;
 import com.google.devtools.build.lib.analysis.config.ConfigurationResolver;
 import com.google.devtools.build.lib.analysis.platform.PlatformInfo;
+import com.google.devtools.build.lib.analysis.producers.TransitiveDependencyState;
 import com.google.devtools.build.lib.analysis.util.AnalysisMock;
 import com.google.devtools.build.lib.analysis.util.AnalysisTestCase;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -43,6 +44,8 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.packages.Attribute;
 import com.google.devtools.build.lib.packages.RuleClassProvider;
 import com.google.devtools.build.lib.packages.Target;
+import com.google.devtools.build.lib.skyframe.toolchains.ToolchainContextKey;
+import com.google.devtools.build.lib.skyframe.toolchains.UnloadedToolchainContextImpl;
 import com.google.devtools.build.lib.skyframe.util.SkyframeExecutorTestUtils;
 import com.google.devtools.build.lib.util.OrderedSetMultimap;
 import com.google.devtools.build.skyframe.AbstractSkyKey;
@@ -63,19 +66,18 @@ import org.junit.runners.JUnit4;
  * Tests {@link ConfiguredTargetFunction}'s logic for determining each target's {@link
  * BuildConfigurationValue}.
  *
- * <p>This is essentially an integration test for {@link
- * ConfiguredTargetFunction#computeDependencies} and {@link DependencyResolver}. These methods form
- * the core logic that figures out what a target's deps are, how their configurations should differ
- * from their parent, and how to instantiate those configurations as tangible {@link
- * BuildConfigurationValue} objects.
+ * <p>This is essentially an integration test for {@link PrerequisiteProducer#computeDependencies}
+ * and {@link DependencyResolver}. These methods form the core logic that figures out what a
+ * target's deps are, how their configurations should differ from their parent, and how to
+ * instantiate those configurations as tangible {@link BuildConfigurationValue} objects.
  *
  * <p>{@link ConfiguredTargetFunction} is a complicated class that does a lot of things. This test
  * focuses purely on the task of determining configurations for deps. So instead of evaluating full
  * {@link ConfiguredTargetFunction} instances, it evaluates a mock {@link SkyFunction} that just
- * wraps the {@link ConfiguredTargetFunction#computeDependencies} part. This keeps focus tight and
+ * wraps the {@link PrerequisiteProducer#computeDependencies} part. This keeps focus tight and
  * integration dependencies narrow.
  *
- * <p>We can't just call {@link ConfiguredTargetFunction#computeDependencies} directly because that
+ * <p>We can't just call {@link PrerequisiteProducer#computeDependencies} directly because that
  * method needs a {@link SkyFunction.Environment} and Blaze's test infrastructure doesn't support
  * direct access to environments.
  */
@@ -83,12 +85,12 @@ import org.junit.runners.JUnit4;
 public final class ConfigurationsForTargetsTest extends AnalysisTestCase {
 
   private static final Label TARGET_PLATFORM_LABEL =
-      Label.parseAbsoluteUnchecked("//platform:target");
-  private static final Label EXEC_PLATFORM_LABEL = Label.parseAbsoluteUnchecked("//platform:exec");
+      Label.parseCanonicalUnchecked("//platform:target");
+  private static final Label EXEC_PLATFORM_LABEL = Label.parseCanonicalUnchecked("//platform:exec");
 
   /**
-   * A mock {@link SkyFunction} that just calls {@link ConfiguredTargetFunction#computeDependencies}
-   * and returns its results.
+   * A mock {@link SkyFunction} that just calls {@link PrerequisiteProducer#computeDependencies} and
+   * returns its results.
    */
   private static class ComputeDependenciesFunction implements SkyFunction {
     static final SkyFunctionName SKYFUNCTION_NAME =
@@ -146,19 +148,20 @@ public final class ConfigurationsForTargetsTest extends AnalysisTestCase {
                             PlatformInfo.builder().setLabel(EXEC_PLATFORM_LABEL).build())
                         .build())
                 .build();
+        var state = new PrerequisiteProducer.State();
+        state.targetAndConfiguration = targetAndConfiguration;
         OrderedSetMultimap<DependencyKind, ConfiguredTargetAndData> depMap =
-            ConfiguredTargetFunction.computeDependencies(
-                new ConfiguredTargetFunction.ComputeDependenciesState(),
-                /*transitivePackagesForPackageRootResolution=*/ null,
-                /*transitiveRootCauses=*/ NestedSetBuilder.stableOrder(),
-                env,
-                new SkyframeDependencyResolver(env),
-                targetAndConfiguration,
-                ImmutableList.of(),
-                ImmutableMap.of(),
+            PrerequisiteProducer.computeDependencies(
+                state,
+                /* aspects= */ ImmutableList.of(),
+                /* configConditions= */ ImmutableMap.of(),
                 toolchainContexts,
                 stateProvider.lateBoundRuleClassProvider(),
-                stateProvider.lateBoundSkyframeBuildView());
+                stateProvider.lateBoundSkyframeBuildView(),
+                TransitiveDependencyState.createForTesting(
+                    /* transitiveRootCauses= */ NestedSetBuilder.stableOrder(),
+                    /* transitivePackages= */ null),
+                env);
         return env.valuesMissing() ? null : new Value(depMap);
       } catch (RuntimeException e) {
         throw e;
@@ -317,12 +320,7 @@ public final class ConfigurationsForTargetsTest extends AnalysisTestCase {
     }
   }
 
-  /**
-   * Tests dependencies in attribute with host transition.
-   *
-   * <p>Note: This cannot be used to test exec transition, because mocks don't set up toolchain
-   * contexts.
-   */
+  /** Tests dependencies in attribute with exec transition. */
   @Test
   public void execDeps() throws Exception {
     scratch.file(

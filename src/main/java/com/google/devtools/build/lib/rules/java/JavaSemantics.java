@@ -29,7 +29,6 @@ import com.google.devtools.build.lib.analysis.Runfiles.Builder;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.actions.CustomCommandLine;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
-import com.google.devtools.build.lib.analysis.actions.Substitution.ComputedSubstitution;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
@@ -48,9 +47,7 @@ import com.google.devtools.build.lib.skyframe.serialization.autocodec.Serializat
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import java.io.File;
 import java.util.List;
-import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 
 /** Pluggable Java compilation semantics. */
@@ -88,15 +85,13 @@ public interface JavaSemantics {
   FileType PROPERTIES = FileType.of(".properties");
   FileType SOURCE_JAR = FileType.of(".srcjar");
 
-  /** Label to the Java Toolchain rule. It is resolved from a label given in the java options. */
-  String JAVA_TOOLCHAIN_LABEL = "//tools/jdk:toolchain";
-
   /** The java_toolchain.compatible_javacopts key for Android javacopts */
   public static final String ANDROID_JAVACOPTS_KEY = "android";
-  /** The java_toolchain.compatible_javacopts key for proto compilations. */
-  public static final String PROTO_JAVACOPTS_KEY = "proto";
   /** The java_toolchain.compatible_javacopts key for testonly compilations. */
   public static final String TESTONLY_JAVACOPTS_KEY = "testonly";
+
+  /** The java_toolchain.compatible_javacopts key for public visibility. */
+  public static final String PUBLIC_VISIBILITY_JAVACOPTS_KEY = "public_visibility";
 
   static Label javaToolchainAttribute(RuleDefinitionEnvironment environment) {
     return environment.getToolsLabel("//tools/jdk:current_java_toolchain");
@@ -109,38 +104,37 @@ public interface JavaSemantics {
   String DIRECT_SOURCE_JARS_OUTPUT_GROUP =
       OutputGroupInfo.HIDDEN_OUTPUT_GROUP_PREFIX + "direct_source_jars";
 
-  /**
-   * Implementation for the :java_launcher attribute. Note that the Java launcher is disabled by
-   * default, so it returns null for the configuration-independent default value.
-   */
-  @SerializationConstant
-  LabelLateBoundDefault<JavaConfiguration> JAVA_LAUNCHER =
-      LabelLateBoundDefault.fromTargetConfiguration(
-          JavaConfiguration.class,
-          null,
-          (rule, attributes, javaConfig) -> {
-            // This nullness check is purely for the sake of a test that doesn't bother to include
-            // an
-            // attribute map when calling this method.
-            if (attributes != null) {
-              // Don't depend on the launcher if we don't create an executable anyway
-              if (attributes.has("create_executable")
-                  && !attributes.get("create_executable", Type.BOOLEAN)) {
-                return null;
-              }
+  public String getJavaToolchainType();
 
-              // use_launcher=False disables the launcher
-              if (attributes.has("use_launcher") && !attributes.get("use_launcher", Type.BOOLEAN)) {
-                return null;
-              }
-
-              // don't read --java_launcher if this target overrides via a launcher attribute
-              if (attributes.isAttributeValueExplicitlySpecified("launcher")) {
-                return attributes.get("launcher", LABEL);
-              }
+  /** Implementation for the :java_launcher attribute. */
+  static LabelLateBoundDefault<JavaConfiguration> javaLauncherAttribute(Label defaultLabel) {
+    return LabelLateBoundDefault.fromTargetConfiguration(
+        JavaConfiguration.class,
+        defaultLabel,
+        (rule, attributes, javaConfig) -> {
+          // This nullness check is purely for the sake of a test that doesn't bother to include
+          // an
+          // attribute map when calling this method.
+          if (attributes != null) {
+            // Don't depend on the launcher if we don't create an executable anyway
+            if (attributes.has("create_executable")
+                && !attributes.get("create_executable", Type.BOOLEAN)) {
+              return null;
             }
-            return javaConfig.getJavaLauncherLabel();
-          });
+
+            // use_launcher=False disables the launcher
+            if (attributes.has("use_launcher") && !attributes.get("use_launcher", Type.BOOLEAN)) {
+              return null;
+            }
+
+            // don't read --java_launcher if this target overrides via a launcher attribute
+            if (attributes.isAttributeValueExplicitlySpecified("launcher")) {
+              return attributes.get("launcher", LABEL);
+            }
+          }
+          return javaConfig.getJavaLauncherLabel();
+        });
+  }
 
   @SerializationConstant
   LabelListLateBoundDefault<JavaConfiguration> JAVA_PLUGINS =
@@ -190,29 +184,6 @@ public interface JavaSemantics {
   String JACOCO_MAIN_CLASS_PLACEHOLDER = "%set_jacoco_main_class%";
   String JACOCO_JAVA_RUNFILES_ROOT_PLACEHOLDER = "%set_jacoco_java_runfiles_root%";
 
-  /** Substitution for exporting the jars needed for jacoco coverage. */
-  class ComputedJacocoSubstitution extends ComputedSubstitution {
-    private final NestedSet<Artifact> jars;
-    private final String pathPrefix;
-
-    public ComputedJacocoSubstitution(NestedSet<Artifact> jars, String workspacePrefix) {
-      super(JACOCO_METADATA_PLACEHOLDER);
-      this.jars = jars;
-      this.pathPrefix = "${JAVA_RUNFILES}/" + workspacePrefix;
-    }
-
-    /**
-     * Concatenating the root relative paths of the artifacts. Each relative path entry is prepended
-     * with "${JAVA_RUNFILES}" and the workspace prefix.
-     */
-    @Override
-    public String getValue() {
-      return jars.toList().stream()
-          .map(artifact -> pathPrefix + "/" + artifact.getRootRelativePathString())
-          .collect(Collectors.joining(File.pathSeparator, "export JACOCO_METADATA_JARS=", ""));
-    }
-  }
-
   /**
    * Verifies if the rule contains any errors.
    *
@@ -241,7 +212,7 @@ public interface JavaSemantics {
    * Returns the resources contributed by a Java rule (usually the contents of the {@code resources}
    * attribute)
    */
-  ImmutableList<Artifact> collectResources(RuleContext ruleContext);
+  ImmutableList<Artifact> collectResources(RuleContext ruleContext) throws RuleErrorException;
 
   String getTestRunnerMainClass();
 
@@ -252,6 +223,7 @@ public interface JavaSemantics {
   CustomCommandLine buildSingleJarCommandLine(
       String toolchainIdentifier,
       Artifact output,
+      Label label,
       String mainClass,
       ImmutableList<String> manifestLines,
       Iterable<Artifact> buildInfoFiles,
@@ -269,6 +241,9 @@ public interface JavaSemantics {
       NestedSet<Artifact> hermeticInputs,
       NestedSet<String> addExports,
       NestedSet<String> addOpens);
+
+  ImmutableList<Artifact> getBuildInfo(RuleContext ruleContext, int stamp)
+      throws RuleErrorException, InterruptedException;
 
   /**
    * Creates the action that writes the Java executable stub script.
@@ -288,18 +263,6 @@ public interface JavaSemantics {
    * <p>In Blaze, this method considers {@code javaExecutable} as a substitution that can be
    * directly used to replace %javabin% in stub script, but in Bazel this method considers {@code
    * javaExecutable} as a file path for the JVM binary (java).
-   */
-  Artifact createStubAction(
-      RuleContext ruleContext,
-      JavaCommon javaCommon,
-      List<String> jvmFlags,
-      Artifact executable,
-      String javaStartClass,
-      String javaExecutable)
-      throws InterruptedException;
-
-  /**
-   * Same as {@link #createStubAction(RuleContext, JavaCommon, List, Artifact, String, String)}.
    *
    * <p>In *experimental* coverage mode creates a txt file containing the runtime jars names. {@code
    * JacocoCoverageRunner} will use it to retrieve the name of the jars considered for collecting
@@ -446,9 +409,6 @@ public interface JavaSemantics {
   /** @return a list of extra arguments to appends to the runfiles support. */
   List<String> getExtraArguments(RuleContext ruleContext, ImmutableList<Artifact> sources);
 
-  /** @return main class (entry point) for the Java compiler. */
-  String getJavaBuilderMainClass();
-
   /**
    * @return An artifact representing the protobuf-format version of the proguard mapping, or null
    *     if the proguard version doesn't support this.
@@ -467,7 +427,7 @@ public interface JavaSemantics {
       JavaCompilationArtifacts.Builder javaCompilationArtifactsBuilder,
       JavaRuleOutputJarsProvider.Builder javaRuleOutputJarsProviderBuilder,
       JavaSourceJarsProvider.Builder javaSourceJarsProviderBuilder)
-      throws InterruptedException;
+      throws InterruptedException, RuleErrorException;
 
   Artifact getObfuscatedConstantStringMap(RuleContext ruleContext) throws InterruptedException;
 

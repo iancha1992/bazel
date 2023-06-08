@@ -312,6 +312,7 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
    * Returns whether the OPTIMIZATION stage of the bytecode optimizer will be split across two
    * actions.
    */
+  @Override
   public boolean splitBytecodeOptimizationPass() {
     return splitBytecodeOptimizationPass;
   }
@@ -321,6 +322,7 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
    * into. Note that if split_bytecode_optimization_pass is set, this will only change behavior if
    * it is > 2.
    */
+  @Override
   public int bytecodeOptimizationPassActions() {
     return bytecodeOptimizationPassActions;
   }
@@ -348,6 +350,20 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
     return bytecodeOptimizer;
   }
 
+  @Override
+  public String getBytecodeOptimizerMnemonic() {
+    return bytecodeOptimizer.name();
+  }
+
+  @StarlarkConfigurationField(
+      name = "bytecode_optimizer",
+      doc = "Returns the label provided with --proguard_top, if any.",
+      defaultInToolRepository = true)
+  @Nullable
+  public Label getBytecodeOptimizerLabel() {
+    return bytecodeOptimizer.label().orNull();
+  }
+
   /** Returns true if the bytecode optimizer should incrementally optimize all Java artifacts. */
   public boolean runLocalJavaOptimizations() {
     return runLocalJavaOptimizations;
@@ -364,12 +380,6 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
    */
   public boolean useLegacyBazelJavaTest() {
     return useLegacyBazelJavaTest;
-  }
-
-  @Override
-  public boolean useLegacyBazelJavaTestForStarlark(StarlarkThread thread) throws EvalException {
-    checkPrivateAccess(thread);
-    return useLegacyBazelJavaTest();
   }
 
   /**
@@ -432,6 +442,7 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
     return oneVersionEnforcementLevel().name();
   }
 
+  @Override
   public boolean enforceOneVersionOnJavaTests() {
     return enforceOneVersionOnJavaTests;
   }
@@ -456,6 +467,7 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
     return jplPropagateCcLinkParamsStore;
   }
 
+  @Override
   public boolean addTestSupportToCompileTimeDeps() {
     return addTestSupportToCompileTimeDeps;
   }

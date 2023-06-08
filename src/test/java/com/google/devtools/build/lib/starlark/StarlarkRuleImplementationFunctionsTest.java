@@ -27,13 +27,14 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
-import com.google.devtools.build.lib.actions.ActionLookupKey;
+import com.google.devtools.build.lib.actions.ActionLookupKeyOrProxy;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
 import com.google.devtools.build.lib.actions.CommandLine;
 import com.google.devtools.build.lib.actions.CommandLineExpansionException;
 import com.google.devtools.build.lib.actions.CompositeRunfilesSupplier;
+import com.google.devtools.build.lib.actions.PathStripper;
 import com.google.devtools.build.lib.actions.RunfilesSupplier;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.analysis.CommandHelper;
@@ -483,7 +484,7 @@ public final class StarlarkRuleImplementationFunctionsTest extends BuildViewTest
         "my_rule = rule(",
         "  _main_rule_impl,",
         "  attrs = { ",
-        "    'exe' : attr.label(executable = True, allow_files = True, cfg='host'),",
+        "    'exe' : attr.label(executable = True, allow_files = True, cfg='exec'),",
         "  },",
         ")");
     scratch.file("bar/bar.bzl", lines.build().toArray(new String[] {}));
@@ -2696,8 +2697,7 @@ public final class StarlarkRuleImplementationFunctionsTest extends BuildViewTest
     AssertionError expected =
         assertThrows(AssertionError.class, () -> getConfiguredTarget("//test:main"));
 
-    assertThat(expected).hasMessageThat()
-        .contains("has to declare 'apple' as a required fragment in target configuration");
+    assertThat(expected).hasMessageThat().contains("has to declare 'apple' as a required fragment");
   }
 
   @Test
@@ -2925,7 +2925,10 @@ public final class StarlarkRuleImplementationFunctionsTest extends BuildViewTest
         CommandLineExpansionException.class,
         () ->
             commandLine.addToFingerprint(
-                actionKeyContext, /*artifactExpander=*/ null, new Fingerprint()));
+                actionKeyContext,
+                /* artifactExpander= */ null,
+                new Fingerprint(),
+                PathStripper.PathMapper.NOOP));
   }
 
   @Test
@@ -3164,7 +3167,7 @@ public final class StarlarkRuleImplementationFunctionsTest extends BuildViewTest
             DerivedArtifact.create(
                 artifact.getRoot(),
                 artifact.getExecPath().getRelative(file),
-                (ActionLookupKey) artifact.getArtifactOwner()));
+                (ActionLookupKeyOrProxy) artifact.getArtifactOwner()));
       }
     };
   }
@@ -3186,7 +3189,8 @@ public final class StarlarkRuleImplementationFunctionsTest extends BuildViewTest
   private String getDigest(CommandLine commandLine, ArtifactExpander artifactExpander)
       throws CommandLineExpansionException, InterruptedException {
     Fingerprint fingerprint = new Fingerprint();
-    commandLine.addToFingerprint(actionKeyContext, artifactExpander, fingerprint);
+    commandLine.addToFingerprint(
+        actionKeyContext, artifactExpander, fingerprint, PathStripper.PathMapper.NOOP);
     return fingerprint.hexDigestAndReset();
   }
 
@@ -3336,21 +3340,51 @@ public final class StarlarkRuleImplementationFunctionsTest extends BuildViewTest
   }
 
   @Test
+  public void testDisablingRunfilesSymlinkChecksIsPrivateAPI() throws Exception {
+    scratch.file(
+        "abc/rule.bzl",
+        "def _impl(ctx):",
+        " ctx.runfiles(skip_conflict_checking = True)",
+        " return []",
+        "",
+        "r = rule(implementation = _impl)");
+    scratch.file("abc/BUILD", "load(':rule.bzl', 'r')", "", "r(name = 'foo')");
+
+    AssertionError error =
+        assertThrows(AssertionError.class, () -> getConfiguredTarget("//abc:foo"));
+
+    assertThat(error)
+        .hasMessageThat()
+        .contains("Error in runfiles: Rule in 'abc' cannot use private API");
+  }
+
+  @Test
   public void testDeclareSharedArtifact_differentFileRoot() throws Exception {
     scratch.file(
         "test/rule.bzl",
+        "RootProvider = provider(fields = ['root'])",
         "def _impl(ctx):",
+        "  if not ctx.attr.dep:",
+        "      return [RootProvider(root = ctx.configuration.bin_dir)]", // This is the child.
+        "  exec_config_root = ctx.attr.dep[RootProvider].root",
         "  a1 = ctx.actions.declare_shareable_artifact(ctx.label.name + '1.so')",
         "  ctx.actions.write(a1, '')",
         "  a2 = ctx.actions.declare_shareable_artifact(",
         "           ctx.label.name + '2.so',",
-        "           ctx.host_configuration.bin_dir",
+        "           exec_config_root",
         "       )",
         "  ctx.actions.write(a2, '')",
         "  return [DefaultInfo(files = depset([a1, a2]))]",
         "",
-        "r = rule(implementation = _impl)");
-    scratch.file("test/BUILD", "load(':rule.bzl', 'r')", "r(name = 'foo')");
+        "r = rule(",
+        "    implementation = _impl,",
+        "    attrs = {'dep': attr.label(cfg = 'exec')},",
+        ")");
+    scratch.file(
+        "test/BUILD",
+        "load(':rule.bzl', 'r')",
+        "r(name = 'foo', dep = ':exec_configured_child')",
+        "r(name = 'exec_configured_child')");
 
     ConfiguredTarget target = getConfiguredTarget("//test:foo");
 
@@ -3369,6 +3403,7 @@ public final class StarlarkRuleImplementationFunctionsTest extends BuildViewTest
             .findFirst()
             .orElse(null);
     assertThat(a2).isNotNull();
-    assertThat(a2.getRoot().getExecPathString()).isEqualTo(getRelativeOutputPath() + "/host/bin");
+    assertThat(a2.getRoot().getExecPathString())
+        .matches(getRelativeOutputPath() + "/[\\w\\-]+\\-exec\\-[\\w\\-]+/bin");
   }
 }

@@ -41,9 +41,10 @@ public class PlatformBaseRule implements RuleDefinition{
                 // No need to show up in ":all", etc. target patterns.
                 .value(ImmutableList.of("manual"))
                 .nonconfigurable("low-level attribute, used in platform configuration"))
+        .removeAttribute(":action_listener")
+        .removeAttribute("applicable_licenses")
         .exemptFromConstraintChecking("this rule helps *define* a constraint")
         .useToolchainResolution(ToolchainResolutionMode.DISABLED)
-        .removeAttribute(":action_listener")
         .build();
   }
 

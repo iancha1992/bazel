@@ -16,13 +16,16 @@ package com.google.devtools.build.lib.analysis.util;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.ImmutableSortedSet;
+import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionExecutionException;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
+import com.google.devtools.build.lib.actions.ActionLookupKeyOrProxy;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.ActionResult;
 import com.google.devtools.build.lib.actions.Artifact;
@@ -42,16 +45,22 @@ import com.google.devtools.build.lib.analysis.WorkspaceStatusAction;
 import com.google.devtools.build.lib.analysis.WorkspaceStatusAction.Key;
 import com.google.devtools.build.lib.analysis.WorkspaceStatusAction.Options;
 import com.google.devtools.build.lib.analysis.buildinfo.BuildInfoKey;
-import com.google.devtools.build.lib.analysis.config.BuildConfigurationCollection;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.analysis.config.BuildOptions;
+import com.google.devtools.build.lib.analysis.config.BuildOptionsView;
+import com.google.devtools.build.lib.analysis.config.ExecutionTransitionFactory;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
+import com.google.devtools.build.lib.packages.AttributeTransitionData;
 import com.google.devtools.build.lib.shell.Command;
 import com.google.devtools.build.lib.skyframe.BuildConfigurationKey;
+import com.google.devtools.build.lib.skyframe.WorkspaceInfoFromDiff;
+import com.google.devtools.build.lib.testutil.FakeAttributeMapper;
 import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.util.CrashFailureDetails;
 import com.google.devtools.build.lib.util.Fingerprint;
@@ -206,7 +215,7 @@ public final class AnalysisTestUtil {
     }
 
     @Override
-    public ActionLookupKey getOwner() {
+    public ActionLookupKeyOrProxy getOwner() {
       return original.getOwner();
     }
 
@@ -307,10 +316,10 @@ public final class AnalysisTestUtil {
     }
   }
 
-  /**
-   * A workspace status action factory that does not do any interaction with the environment.
-   */
-  public static class DummyWorkspaceStatusActionFactory implements WorkspaceStatusAction.Factory {
+  /** A workspace status action factory that does not do any interaction with the environment. */
+  public static final class DummyWorkspaceStatusActionFactory
+      implements WorkspaceStatusAction.Factory {
+
     @Override
     public WorkspaceStatusAction createWorkspaceStatusAction(
         WorkspaceStatusAction.Environment env) {
@@ -320,9 +329,9 @@ public final class AnalysisTestUtil {
     }
 
     @Override
-    public Map<String, String> createDummyWorkspaceStatus(
-        WorkspaceStatusAction.DummyEnvironment env) {
-      return ImmutableMap.of();
+    public ImmutableSortedMap<String, String> createDummyWorkspaceStatus(
+        @Nullable WorkspaceInfoFromDiff workspaceInfoFromDiff) {
+      return ImmutableSortedMap.of();
     }
   }
 
@@ -503,21 +512,7 @@ public final class AnalysisTestUtil {
    * <p>The returned set preserves the order of the input.
    */
   public static Set<String> artifactsToStrings(
-      BuildConfigurationCollection configurations, Iterable<? extends Artifact> artifacts) {
-    BuildConfigurationValue targetConfiguration = configurations.getTargetConfiguration();
-    BuildConfigurationValue hostConfiguration = configurations.getHostConfiguration();
-    return artifactsToStrings(targetConfiguration, hostConfiguration, artifacts);
-  }
-
-  /**
-   * Given a collection of Artifacts, returns a corresponding set of strings of the form "{root}
-   * {relpath}", such as "bin x/libx.a". Such strings make assertions easier to write.
-   *
-   * <p>The returned set preserves the order of the input.
-   */
-  public static Set<String> artifactsToStrings(
       BuildConfigurationValue targetConfiguration,
-      BuildConfigurationValue hostConfiguration,
       Iterable<? extends Artifact> artifacts) {
     Map<String, String> rootMap = new HashMap<>();
     computeRootPaths(
@@ -529,17 +524,6 @@ public final class AnalysisTestUtil {
     computeRootPaths(
         targetConfiguration.getMiddlemanDirectory(RepositoryName.MAIN),
         path -> rootMap.put(path, "internal"));
-
-    computeRootPaths(
-        hostConfiguration.getBinDirectory(RepositoryName.MAIN),
-        path -> rootMap.put(path, "bin(host)"));
-    // In preparation for merging genfiles/ and bin/, we don't differentiate them in tests anymore
-    computeRootPaths(
-        hostConfiguration.getGenfilesDirectory(RepositoryName.MAIN),
-        path -> rootMap.put(path, "bin(host)"));
-    computeRootPaths(
-        hostConfiguration.getMiddlemanDirectory(RepositoryName.MAIN),
-        path -> rootMap.put(path, "internal(host)"));
 
     Set<String> files = new LinkedHashSet<>();
     for (Artifact artifact : artifacts) {
@@ -565,5 +549,18 @@ public final class AnalysisTestUtil {
         /*repoMappingManifest=*/ null,
         /*buildRunfileLinks=*/ false,
         /*runfileLinksEnabled=*/ false);
+  }
+
+  public static BuildOptions execOptions(BuildOptions targetOptions, EventHandler handler)
+      throws InterruptedException {
+    return Iterables.getOnlyElement(
+        ExecutionTransitionFactory.createFactory()
+            .create(
+                AttributeTransitionData.builder()
+                    .attributes(FakeAttributeMapper.empty())
+                    .executionPlatform(Label.parseCanonicalUnchecked("//platform:exec"))
+                    .build())
+            .apply(new BuildOptionsView(targetOptions, targetOptions.getFragmentClasses()), handler)
+            .values());
   }
 }

@@ -59,6 +59,7 @@ import com.google.devtools.build.lib.analysis.actions.ParameterFileWriteAction;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
 import com.google.devtools.build.lib.analysis.actions.SpawnActionTemplate;
 import com.google.devtools.build.lib.analysis.actions.SpawnActionTemplate.OutputPathMapper;
+import com.google.devtools.build.lib.analysis.actions.SymlinkAction;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
@@ -599,13 +600,19 @@ public abstract class AndroidBinary implements RuleConfiguredTargetFactory {
             filesBuilder,
             dexingOutput.classesDexZip,
             proguardOutput,
-            postProcessingOutputMap);
+            postProcessingOutputMap,
+            dexingOutput.mainDexList);
+
+    AndroidDexInfo androidDexInfo =
+        ruleContext.getPrerequisite("application_resources", AndroidDexInfo.PROVIDER);
 
     // Compute the final DEX files by appending Java 8 legacy .dex if used.
-    Artifact finalClassesDex;
+    final Artifact finalClassesDex;
     Java8LegacyDexOutput java8LegacyDexOutput;
     ImmutableList<Artifact> finalShardDexZips = dexingOutput.shardDexZips;
-    if (AndroidCommon.getAndroidConfig(ruleContext).desugarJava8Libs()
+    if (androidDexInfo != null) {
+      finalClassesDex = androidDexInfo.getFinalClassesDexZip();
+    } else if (AndroidCommon.getAndroidConfig(ruleContext).desugarJava8Libs()
         && dexPostprocessingOutput.classesDexZip().getFilename().endsWith(".zip")) {
       if (binaryJar.equals(jarToDex)) {
         // No shrinking: use canned Java 8 legacy .dex file
@@ -669,8 +676,14 @@ public abstract class AndroidBinary implements RuleConfiguredTargetFactory {
       proguardOutput.addAllToSet(filesBuilder, finalProguardOutputMap);
     }
 
+    BaselineProfileProvider baselineprofileProvider =
+        ruleContext.getPrerequisite("application_resources", BaselineProfileProvider.PROVIDER);
     Artifact artProfileZip =
-        androidSemantics.getArtProfileForApk(ruleContext, finalClassesDex, finalProguardOutputMap);
+        (baselineprofileProvider != null)
+            ? baselineprofileProvider.getArtProfileZip()
+            : androidSemantics.getArtProfileForApk(
+                ruleContext, finalClassesDex, finalProguardOutputMap);
+
     Artifact unsignedApk =
         ruleContext.getImplicitOutputArtifact(AndroidRuleClasses.ANDROID_BINARY_UNSIGNED_APK);
     Artifact zipAlignedApk =
@@ -690,7 +703,11 @@ public abstract class AndroidBinary implements RuleConfiguredTargetFactory {
         ApkActionsBuilder.create("apk")
             .setClassesDex(finalClassesDex)
             .addInputZip(resourceApk.getArtifact())
-            .setJavaResourceZip(dexingOutput.javaResourceJar, resourceExtractor)
+            .setJavaResourceZip(
+                androidDexInfo == null
+                    ? dexingOutput.javaResourceJar
+                    : androidDexInfo.getJavaResourceJar(),
+                resourceExtractor)
             .addInputZips(nativeLibsAar.toList())
             .setNativeLibs(nativeLibs)
             .setUnsignedApk(unsignedApk)
@@ -979,7 +996,10 @@ public abstract class AndroidBinary implements RuleConfiguredTargetFactory {
     return libraryResourceJarsBuilder.build();
   }
 
-  /** Generates an uncompressed _deploy.jar of all the runtime jars. */
+  /**
+   * Generates an uncompressed _deploy.jar of all the runtime jars, or creates a link to the deploy
+   * jar created by this android_binary's android_binary_internal target if it is provided.
+   */
   public static Artifact createDeployJar(
       RuleContext ruleContext,
       JavaSemantics javaSemantics,
@@ -988,15 +1008,32 @@ public abstract class AndroidBinary implements RuleConfiguredTargetFactory {
       boolean checkDesugarDeps,
       Function<Artifact, Artifact> derivedJarFunction)
       throws InterruptedException {
+
     Artifact deployJar =
         ruleContext.getImplicitOutputArtifact(AndroidRuleClasses.ANDROID_BINARY_DEPLOY_JAR);
-    new DeployArchiveBuilder(javaSemantics, ruleContext)
-        .setOutputJar(deployJar)
-        .setAttributes(attributes)
-        .addRuntimeJars(common.getRuntimeJars())
-        .setDerivedJarFunction(derivedJarFunction)
-        .setCheckDesugarDeps(checkDesugarDeps)
-        .build();
+
+    AndroidDexInfo androidDexInfo =
+        ruleContext.getPrerequisite("application_resources", AndroidDexInfo.PROVIDER);
+
+    if (androidDexInfo != null && androidDexInfo.getDeployJar() != null) {
+      // Symlink to the deploy jar created by this android_binary's android_binary_internal target
+      // to satisfy the deploy jar implicit output of android_binary.
+      ruleContext.registerAction(
+          SymlinkAction.toArtifact(
+              ruleContext.getActionOwner(),
+              androidDexInfo.getDeployJar(), // target
+              deployJar, // symlink
+              "Symlinking Android deploy jar"));
+    } else {
+      new DeployArchiveBuilder(javaSemantics, ruleContext)
+          .setOutputJar(deployJar)
+          .setAttributes(attributes)
+          .addRuntimeJars(common.getRuntimeJars())
+          .setDerivedJarFunction(derivedJarFunction)
+          .setCheckDesugarDeps(checkDesugarDeps)
+          .build();
+    }
+
     return deployJar;
   }
 
@@ -1235,12 +1272,19 @@ public abstract class AndroidBinary implements RuleConfiguredTargetFactory {
     private final Artifact classesDexZip;
     final Artifact javaResourceJar;
     final ImmutableList<Artifact> shardDexZips;
+    // This is not technically and output of dexing, but the processed main dex list that was used
+    // in dexing.
+    final Artifact mainDexList;
 
     private DexingOutput(
-        Artifact classesDexZip, Artifact javaResourceJar, ImmutableList<Artifact> shardDexZips) {
+        Artifact classesDexZip,
+        Artifact javaResourceJar,
+        ImmutableList<Artifact> shardDexZips,
+        Artifact mainDexList) {
       this.classesDexZip = classesDexZip;
       this.javaResourceJar = javaResourceJar;
       this.shardDexZips = Preconditions.checkNotNull(shardDexZips);
+      this.mainDexList = mainDexList;
     }
   }
 
@@ -1392,7 +1436,7 @@ public abstract class AndroidBinary implements RuleConfiguredTargetFactory {
         // for other multidex modes.
         javaResourceJar = javaResourceSourceJar;
       }
-      return new DexingOutput(classesDex, javaResourceJar, shardDexes);
+      return new DexingOutput(classesDex, javaResourceJar, shardDexes, mainDexList);
     } else {
       if (usesDexArchives) {
         createIncrementalDexingActions(
@@ -1424,7 +1468,8 @@ public abstract class AndroidBinary implements RuleConfiguredTargetFactory {
             mainDexList);
         createCleanDexZipAction(ruleContext, classesDexIntermediate, classesDex);
       }
-      return new DexingOutput(classesDex, javaResourceSourceJar, ImmutableList.of(classesDex));
+      return new DexingOutput(
+          classesDex, javaResourceSourceJar, ImmutableList.of(classesDex), mainDexList);
     }
   }
 

@@ -59,7 +59,7 @@ import org.junit.runners.JUnit4;
  */
 @RunWith(JUnit4.class)
 public class CcLibraryConfiguredTargetTest extends BuildViewTestCase {
-  private static final PathFragment STL_CPPMAP = PathFragment.create("stl.cppmap");
+  private static final PathFragment STL_CPPMAP = PathFragment.create("stl_cc_library.cppmap");
   private static final PathFragment CROSSTOOL_CPPMAP = PathFragment.create("crosstool.cppmap");
 
   @Override
@@ -321,7 +321,7 @@ public class CcLibraryConfiguredTargetTest extends BuildViewTestCase {
         getOnlyElement(
             FileType.filter(getFilesToBuild(hello).toList(), CppFileTypes.SHARED_LIBRARY));
     CppLinkAction action = (CppLinkAction) getGeneratingAction(sharedObject);
-    for (String option : MockCcSupport.getLinkopts(action.getLinkCommandLine())) {
+    for (String option : MockCcSupport.getLinkopts(action.getLinkCommandLineForTesting())) {
       assertThat(option).doesNotContain("-Wl,-soname");
     }
 
@@ -334,7 +334,7 @@ public class CcLibraryConfiguredTargetTest extends BuildViewTestCase {
             .iterator()
             .next();
     action = (CppLinkAction) getGeneratingAction(sharedObject);
-    assertThat(MockCcSupport.getLinkopts(action.getLinkCommandLine()))
+    assertThat(MockCcSupport.getLinkopts(action.getLinkCommandLineForTesting()))
         .contains("-Wl,-soname=libhello_Slibhello.so");
   }
 
@@ -363,15 +363,15 @@ public class CcLibraryConfiguredTargetTest extends BuildViewTestCase {
     CppLinkInfo cppLinkInfo = info.getExtension(CppLinkInfo.cppLinkInfo);
 
     Iterable<String> inputs =
-        Artifact.asExecPaths(action.getLinkCommandLine().getLinkerInputArtifacts());
+        Artifact.asExecPaths(action.getLinkCommandLineForTesting().getLinkerInputArtifacts());
     assertThat(cppLinkInfo.getInputFileList()).containsExactlyElementsIn(inputs);
     assertThat(cppLinkInfo.getOutputFile())
         .isEqualTo(action.getPrimaryOutput().getExecPathString());
     assertThat(cppLinkInfo.hasInterfaceOutputFile()).isFalse();
     assertThat(cppLinkInfo.getLinkTargetType())
-        .isEqualTo(action.getLinkCommandLine().getLinkTargetType().name());
+        .isEqualTo(action.getLinkCommandLineForTesting().getLinkTargetType().name());
     assertThat(cppLinkInfo.getLinkStaticness())
-        .isEqualTo(action.getLinkCommandLine().getLinkingMode().name());
+        .isEqualTo(action.getLinkCommandLineForTesting().getLinkingMode().name());
     Iterable<String> linkstamps = Artifact.asExecPaths(action.getLinkstampObjects());
     assertThat(cppLinkInfo.getLinkStampList()).containsExactlyElementsIn(linkstamps);
     Iterable<String> buildInfoHeaderArtifacts =
@@ -403,14 +403,14 @@ public class CcLibraryConfiguredTargetTest extends BuildViewTestCase {
     CppLinkInfo cppLinkInfo = info.getExtension(CppLinkInfo.cppLinkInfo);
 
     Iterable<String> inputs =
-        Artifact.asExecPaths(action.getLinkCommandLine().getLinkerInputArtifacts());
+        Artifact.asExecPaths(action.getLinkCommandLineForTesting().getLinkerInputArtifacts());
     assertThat(cppLinkInfo.getInputFileList()).containsExactlyElementsIn(inputs);
     assertThat(cppLinkInfo.getOutputFile())
         .isEqualTo(action.getPrimaryOutput().getExecPathString());
     assertThat(cppLinkInfo.getLinkTargetType())
-        .isEqualTo(action.getLinkCommandLine().getLinkTargetType().name());
+        .isEqualTo(action.getLinkCommandLineForTesting().getLinkTargetType().name());
     assertThat(cppLinkInfo.getLinkStaticness())
-        .isEqualTo(action.getLinkCommandLine().getLinkingMode().name());
+        .isEqualTo(action.getLinkCommandLineForTesting().getLinkingMode().name());
     Iterable<String> linkstamps = Artifact.asExecPaths(action.getLinkstampObjects());
     assertThat(cppLinkInfo.getLinkStampList()).containsExactlyElementsIn(linkstamps);
     Iterable<String> buildInfoHeaderArtifacts =
@@ -497,8 +497,7 @@ public class CcLibraryConfiguredTargetTest extends BuildViewTestCase {
     Artifact helloBinExe = getFilesToBuild(helloBin).toList().get(0);
     assertThat(helloBinExe.getExecPathString()).endsWith("hello_bin.exe");
 
-    assertThat(
-            artifactsToStrings(getOutputGroup(hello, CcLibrary.DYNAMIC_LIBRARY_OUTPUT_GROUP_NAME)))
+    assertThat(artifactsToStrings(getOutputGroup(hello, "dynamic_library")))
         .containsExactly("bin hello/hello_5e918d2.dll", "bin hello/hello.if.lib");
   }
 
@@ -2007,6 +2006,44 @@ public class CcLibraryConfiguredTargetTest extends BuildViewTestCase {
   }
 
   @Test
+  public void testImplementationDepsRunfilesArePropagated() throws Exception {
+    useConfiguration("--experimental_cc_implementation_deps");
+    scratch.file(
+        "foo/BUILD",
+        "cc_binary(",
+        "    name = 'bin',",
+        "    srcs = ['bin.cc'],",
+        "    deps = ['lib'],",
+        ")",
+        "cc_library(",
+        "    name = 'lib',",
+        "    srcs = ['lib.cc'],",
+        "    deps = ['public_dep'],",
+        ")",
+        "cc_library(",
+        "    name = 'public_dep',",
+        "    srcs = ['public_dep.cc'],",
+        "    hdrs = ['public_dep.h'],",
+        "    implementation_deps = ['implementation_dep'],",
+        "    deps = ['interface_dep'],",
+        ")",
+        "cc_library(",
+        "    name = 'interface_dep',",
+        "    data = ['data/interface.txt'],",
+        ")",
+        "cc_library(",
+        "    name = 'implementation_dep',",
+        "    data = ['data/implementation.txt'],",
+        ")");
+
+    ConfiguredTarget lib = getConfiguredTarget("//foo:bin");
+    assertThat(
+            artifactsToStrings(
+                lib.get(DefaultInfo.PROVIDER).getDefaultRunfiles().getAllArtifacts()))
+        .containsAtLeast("src foo/data/interface.txt", "src foo/data/implementation.txt");
+  }
+
+  @Test
   public void testImplementationDepsConfigurationHostSucceeds() throws Exception {
     useConfiguration("--experimental_cc_implementation_deps");
     scratch.file(
@@ -2023,7 +2060,8 @@ public class CcLibraryConfiguredTargetTest extends BuildViewTestCase {
         "    hdrs = ['implementation_dep.h'],",
         ")");
 
-    getHostConfiguredTarget("//foo:public_dep");
+    assertThat(getExecConfiguredTarget("//foo:public_dep")).isNotNull();
+    ;
     assertDoesNotContainEvent("requires --experimental_cc_implementation_deps");
   }
 
@@ -2119,7 +2157,7 @@ public class CcLibraryConfiguredTargetTest extends BuildViewTestCase {
     ConfiguredTarget main = getConfiguredTarget("//:main");
     Artifact mainBin = getBinArtifact("main", main);
     CppLinkAction action = (CppLinkAction) getGeneratingAction(mainBin);
-    assertThat(Joiner.on(" ").join(action.getLinkCommandLine().arguments()))
+    assertThat(Joiner.on(" ").join(action.getLinkCommandLineForTesting().arguments()))
         .doesNotContain("-Xlinker -rpath");
   }
 
@@ -2152,7 +2190,7 @@ public class CcLibraryConfiguredTargetTest extends BuildViewTestCase {
     ConfiguredTarget main = getConfiguredTarget("//no-transition:main");
     Artifact mainBin = getBinArtifact("main", main);
     CppLinkAction action = (CppLinkAction) getGeneratingAction(mainBin);
-    List<String> linkArgv = action.getLinkCommandLine().arguments();
+    List<String> linkArgv = action.getLinkCommandLineForTesting().arguments();
     assertThat(linkArgv)
         .containsAtLeast("-Xlinker", "-rpath", "-Xlinker", "$ORIGIN/../_solib_k8/")
         .inOrder();
@@ -2221,7 +2259,7 @@ public class CcLibraryConfiguredTargetTest extends BuildViewTestCase {
     ConfiguredTarget main = getConfiguredTarget("//transition:main");
     Artifact mainBin = getBinArtifact("main", main);
     CppLinkAction action = (CppLinkAction) getGeneratingAction(mainBin);
-    List<String> linkArgv = action.getLinkCommandLine().arguments();
+    List<String> linkArgv = action.getLinkCommandLineForTesting().arguments();
     assertThat(linkArgv)
         .containsAtLeast("-Xlinker", "-rpath", "-Xlinker", "$ORIGIN/../_solib_k8/")
         .inOrder();

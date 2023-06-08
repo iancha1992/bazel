@@ -48,7 +48,7 @@ public class SkyframeErrorProcessorTest {
       @TestParameter boolean includeExecutionPhase) throws Exception {
     ConfiguredTargetKey analysisErrorKey =
         ConfiguredTargetKey.builder()
-            .setLabel(Label.parseAbsoluteUnchecked("//analysis_err"))
+            .setLabel(Label.parseCanonicalUnchecked("//analysis_err"))
             .build();
     ConfiguredValueCreationException analysisException =
         new ConfiguredValueCreationException(
@@ -61,7 +61,7 @@ public class SkyframeErrorProcessorTest {
             /*isTransitivelyTransient=*/ false);
 
     EvaluationResult<SkyValue> result =
-        EvaluationResult.builder().addError(analysisErrorKey, analysisErrorInfo).build();
+        EvaluationResult.builder().addError(analysisErrorKey.toKey(), analysisErrorInfo).build();
 
     ViewCreationFailedException thrown =
         assertThrows(

@@ -129,7 +129,6 @@ public class TestConstants {
    */
   public static final ImmutableList<String> PRODUCT_SPECIFIC_FLAGS =
       ImmutableList.of(
-          "--target_platform_fallback=@local_config_platform//:host",
           "--platforms=@local_config_platform//:host",
           "--host_platform=@local_config_platform//:host",
           // TODO(#7849): Remove after flag flip.
@@ -163,6 +162,12 @@ public class TestConstants {
   /** The target name for ProGuard's allowlister. */
   public static final String PROGUARD_ALLOWLISTER_TARGET =
       "@bazel_tools//tools/jdk:proguard_whitelister";
+
+  /** The java toolchain type. */
+  public static final String JAVA_TOOLCHAIN_TYPE = "@bazel_tools//tools/jdk:toolchain_type";
+
+  /** The cpp toolchain type. */
+  public static final String CPP_TOOLCHAIN_TYPE = "@bazel_tools//tools/cpp:toolchain_type";
 
   /** A choice of test execution mode, only varies internally. */
   public enum InternalTestExecutionMode {

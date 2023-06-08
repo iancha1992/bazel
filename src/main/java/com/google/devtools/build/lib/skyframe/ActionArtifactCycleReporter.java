@@ -18,6 +18,7 @@ import com.google.common.base.Predicates;
 import com.google.devtools.build.lib.actions.ActionLookupData;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.collect.nestedset.ArtifactNestedSetKey;
 import com.google.devtools.build.lib.pkgcache.PackageProvider;
 import com.google.devtools.build.lib.skyframe.TestCompletionValue.TestCompletionKey;
 import com.google.devtools.build.skyframe.CycleInfo;
@@ -44,7 +45,8 @@ public class ActionArtifactCycleReporter extends AbstractLabelCycleReporter {
   }
 
   @Override
-  protected String prettyPrint(SkyKey key) {
+  protected String prettyPrint(Object untypedKey) {
+    SkyKey key = (SkyKey) untypedKey;
     return prettyPrint(key.functionName(), key.argument());
   }
 
@@ -53,8 +55,8 @@ public class ActionArtifactCycleReporter extends AbstractLabelCycleReporter {
       return prettyPrintArtifact(((Artifact) arg));
     } else if (arg instanceof ActionLookupData) {
       return "action from: " + arg;
-    } else if (arg instanceof TopLevelActionLookupKey) {
-      TopLevelActionLookupKey key = (TopLevelActionLookupKey) arg;
+    } else if (arg instanceof TopLevelActionLookupKeyWrapper) {
+      TopLevelActionLookupKeyWrapper key = (TopLevelActionLookupKeyWrapper) arg;
       if (skyFunctionName.equals(SkyFunctions.TARGET_COMPLETION)) {
         return "configured target: " + key.actionLookupKey().getLabel();
       }
@@ -85,8 +87,8 @@ public class ActionArtifactCycleReporter extends AbstractLabelCycleReporter {
       return ((Artifact) arg).getOwner();
     } else if (arg instanceof ActionLookupData) {
       return ((ActionLookupData) arg).getLabel();
-    } else if (arg instanceof TopLevelActionLookupKey) {
-      return ((TopLevelActionLookupKey) arg).actionLookupKey().getLabel();
+    } else if (arg instanceof TopLevelActionLookupKeyWrapper) {
+      return ((TopLevelActionLookupKeyWrapper) arg).actionLookupKey().getLabel();
     } else if (arg instanceof TestCompletionKey
         && key.functionName().equals(SkyFunctions.TEST_COMPLETION)) {
       return ((TestCompletionKey) arg).configuredTargetKey().getLabel();

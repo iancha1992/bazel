@@ -37,6 +37,7 @@ import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Root;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
@@ -102,6 +103,7 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
 
   private final SandboxHelpers helpers;
   private final Path execRoot;
+  private final ImmutableList<Root> packageRoots;
   private final boolean allowNetwork;
   private final ProcessWrapper processWrapper;
   private final Path sandboxBase;
@@ -139,6 +141,7 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
     super(cmdEnv);
     this.helpers = helpers;
     this.execRoot = cmdEnv.getExecRoot();
+    this.packageRoots = cmdEnv.getPackageLocator().getPathEntries();
     this.allowNetwork = helpers.shouldAllowNetwork(cmdEnv.getOptions());
     this.alwaysWritableDirs = getAlwaysWritableDirs(cmdEnv.getRuntime().getFileSystem());
     this.processWrapper = ProcessWrapper.fromCommandEnvironment(cmdEnv);
@@ -227,12 +230,17 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
         localEnvProvider.rewriteLocalEnv(spawn.getEnvironment(), binTools, "/tmp");
 
     final HashSet<Path> writableDirs = new HashSet<>(alwaysWritableDirs);
-    ImmutableSet<Path> extraWritableDirs = getWritableDirs(sandboxExecRoot, environment);
+    ImmutableSet<Path> extraWritableDirs =
+        getWritableDirs(sandboxExecRoot, sandboxExecRoot, environment);
     writableDirs.addAll(extraWritableDirs);
 
     SandboxInputs inputs =
         helpers.processInputFiles(
-            context.getInputMapping(PathFragment.EMPTY_FRAGMENT), execRoot, execRoot, null);
+            context.getInputMapping(PathFragment.EMPTY_FRAGMENT, /* willAccessRepeatedly= */ true),
+            execRoot,
+            execRoot,
+            packageRoots,
+            null);
     SandboxOutputs outputs = helpers.getOutputs(spawn);
 
     final Path sandboxConfigPath = sandboxPath.getRelative("sandbox.sb");
@@ -276,6 +284,8 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
           ImmutableSet.of(),
           sandboxfsMapSymlinkTargets,
           treeDeleter,
+          spawn.getMnemonic(),
+          /* sandboxDebugPath= */ null,
           statisticsPath) {
         @Override
         public void createFileSystem() throws IOException {
@@ -304,12 +314,11 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
           outputs,
           writableDirs,
           treeDeleter,
+          /* sandboxDebugPath= */ null,
           statisticsPath,
-          getSandboxOptions().reuseSandboxDirectories,
-          sandboxBase,
           spawn.getMnemonic()) {
         @Override
-        public void createFileSystem() throws IOException {
+        public void createFileSystem() throws IOException, InterruptedException {
           super.createFileSystem();
           writeConfig(
               sandboxConfigPath,
@@ -327,7 +336,7 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
       Set<Path> writableDirs,
       Set<Path> inaccessiblePaths,
       boolean allowNetwork,
-      Path statisticsPath)
+      @Nullable Path statisticsPath)
       throws IOException {
     try (PrintWriter out =
         new PrintWriter(

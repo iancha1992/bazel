@@ -20,12 +20,12 @@ import static com.google.devtools.build.lib.packages.Type.STRING_LIST;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Streams;
 import com.google.devtools.build.lib.analysis.RuleContext;
-import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.collect.nestedset.Depset;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.packages.AttributeMap;
+import com.google.devtools.build.lib.rules.java.JavaInfo.JavaInfoInternalProvider;
 import com.google.devtools.build.lib.starlarkbuildapi.java.JavaModuleFlagsProviderApi;
 import java.util.Collection;
 import java.util.List;
@@ -35,7 +35,8 @@ import java.util.stream.Stream;
  * Provides information about {@code --add-exports=} and {@code --add-opens=} flags for Java
  * targets.
  */
-final class JavaModuleFlagsProvider implements TransitiveInfoProvider, JavaModuleFlagsProviderApi {
+final class JavaModuleFlagsProvider
+    implements JavaInfoInternalProvider, JavaModuleFlagsProviderApi {
 
   private final NestedSet<String> addExports;
   private final NestedSet<String> addOpens;
@@ -50,12 +51,12 @@ final class JavaModuleFlagsProvider implements TransitiveInfoProvider, JavaModul
 
   @Override
   public Depset /*String*/ getAddExports() {
-    return Depset.of(Depset.ElementType.STRING, addExports);
+    return Depset.of(String.class, addExports);
   }
 
   @Override
   public Depset /*String*/ getAddOpens() {
-    return Depset.of(Depset.ElementType.STRING, addOpens);
+    return Depset.of(String.class, addOpens);
   }
 
   public JavaModuleFlagsProvider(NestedSet<String> addExports, NestedSet<String> addOpens) {

@@ -31,7 +31,6 @@ import com.google.devtools.build.lib.packages.RuleFactory.InvalidRuleException;
 import com.google.devtools.build.lib.starlarkbuildapi.WorkspaceGlobalsApi;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.List;
-import java.util.Map;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.Module;
@@ -43,11 +42,11 @@ import net.starlark.java.eval.StarlarkThread;
 public class WorkspaceGlobals implements WorkspaceGlobalsApi {
 
   private final boolean allowOverride;
-  private final RuleFactory ruleFactory;
+  private final ImmutableMap<String, RuleClass> ruleClassMap;
 
-  public WorkspaceGlobals(boolean allowOverride, RuleFactory ruleFactory) {
+  public WorkspaceGlobals(boolean allowOverride, ImmutableMap<String, RuleClass> ruleClassMap) {
     this.allowOverride = allowOverride;
-    this.ruleFactory = ruleFactory;
+    this.ruleClassMap = ruleClassMap;
   }
 
   @Override
@@ -66,9 +65,9 @@ public class WorkspaceGlobals implements WorkspaceGlobalsApi {
     }
     PackageFactory.getContext(thread).pkgBuilder.setWorkspaceName(name);
     Package.Builder builder = PackageFactory.getContext(thread).pkgBuilder;
-    RuleClass localRepositoryRuleClass = ruleFactory.getRuleClass("local_repository");
-    RuleClass bindRuleClass = ruleFactory.getRuleClass("bind");
-    Map<String, Object> kwargs = ImmutableMap.of("name", name, "path", ".");
+    RuleClass localRepositoryRuleClass = ruleClassMap.get("local_repository");
+    RuleClass bindRuleClass = ruleClassMap.get("bind");
+    ImmutableMap<String, Object> kwargs = ImmutableMap.of("name", name, "path", ".");
     try {
       // This effectively adds a "local_repository(name = "<ws>", path = ".")"
       // definition to the WORKSPACE file.
@@ -77,7 +76,6 @@ public class WorkspaceGlobals implements WorkspaceGlobalsApi {
           localRepositoryRuleClass,
           bindRuleClass,
           kwargs,
-          thread.getSemantics(),
           thread.getCallStack());
     } catch (InvalidRuleException | NameConflictException | LabelSyntaxException e) {
       throw Starlark.errorf("%s", e.getMessage());
@@ -93,7 +91,7 @@ public class WorkspaceGlobals implements WorkspaceGlobalsApi {
       return RepositoryName.MAIN;
     }
 
-    // registeration happened in a loaded bzl file
+    // registration happened in a loaded bzl file
     return label.getRepository();
   }
 
@@ -145,13 +143,12 @@ public class WorkspaceGlobals implements WorkspaceGlobalsApi {
     }
     try {
       Package.Builder builder = PackageFactory.getContext(thread).pkgBuilder;
-      RuleClass ruleClass = ruleFactory.getRuleClass("bind");
+      RuleClass ruleClass = ruleClassMap.get("bind");
       WorkspaceFactoryHelper.addBindRule(
           builder,
           ruleClass,
           nameLabel,
           actual == NONE ? null : Label.parseCanonical((String) actual),
-          thread.getSemantics(),
           thread.getCallStack());
     } catch (InvalidRuleException | Package.NameConflictException | LabelSyntaxException e) {
       throw Starlark.errorf("%s", e.getMessage());

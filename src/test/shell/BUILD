@@ -1,5 +1,5 @@
 load("//:distdir_deps.bzl", "gen_workspace_stanza")
-load("//tools/python:private/defs.bzl", "py_test")
+load("@rules_python//python:defs.bzl", "py_test")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -26,10 +26,14 @@ gen_workspace_stanza(
     name = "testenv_sh",
     out = "testenv.sh",
     repos = [
+        "bazel_skylib",
         "rules_cc",
         "rules_java",
         "rules_license",
+        "rules_pkg",
         "rules_proto",
+        "rules_python",
+        "rules_testing",
     ],
     template = "testenv.sh.tmpl",
     visibility = ["//visibility:public"],

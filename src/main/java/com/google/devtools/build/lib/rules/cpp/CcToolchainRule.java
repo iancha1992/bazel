@@ -296,20 +296,25 @@ public final class CcToolchainRule implements RuleDefinition {
         .add(attr(CcToolchainInputsTransitionFactory.ATTR_NAME, BOOLEAN).value(true))
         .add(
             attr("$interface_library_builder", LABEL)
-                .cfg(ExecutionTransitionFactory.create())
+                .cfg(ExecutionTransitionFactory.createFactory())
                 .singleArtifact()
                 .value(env.getToolsLabel("//tools/cpp:interface_library_builder")))
         .add(
             attr("$link_dynamic_library_tool", LABEL)
-                .cfg(ExecutionTransitionFactory.create())
+                .cfg(ExecutionTransitionFactory.createFactory())
                 .singleArtifact()
                 .value(env.getToolsLabel("//tools/cpp:link_dynamic_library")))
+        .add(
+            attr("$grep_includes", LABEL)
+                .exec()
+                .cfg(ExecutionTransitionFactory.createFactory())
+                .value(env.getToolsLabel("//tools/cpp:grep-includes")))
         .add(
             attr(CcToolchain.CC_TOOLCHAIN_TYPE_ATTRIBUTE_NAME, NODEP_LABEL)
                 .value(CppRuleClasses.ccToolchainTypeAttribute(env)))
         .add(
             attr(":zipper", LABEL)
-                .cfg(ExecutionTransitionFactory.create())
+                .cfg(ExecutionTransitionFactory.createFactory())
                 .singleArtifact()
                 .value(
                     LabelLateBoundDefault.fromTargetConfiguration(

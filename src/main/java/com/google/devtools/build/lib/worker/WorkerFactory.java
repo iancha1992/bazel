@@ -13,6 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.lib.worker;
 
+import com.google.common.eventbus.EventBus;
 import com.google.common.flogger.GoogleLogger;
 import com.google.common.io.BaseEncoding;
 import com.google.devtools.build.lib.events.Event;
@@ -46,6 +47,8 @@ public class WorkerFactory extends BaseKeyedPooledObjectFactory<WorkerKey, Worke
 
   private final Path workerBaseDir;
   private Reporter reporter;
+  private EventBus eventBus;
+
   /**
    * Options specific to hardened sandbox. Null if {@code --experimental_worker_sandbox_hardening}
    * is not set.
@@ -63,6 +66,10 @@ public class WorkerFactory extends BaseKeyedPooledObjectFactory<WorkerKey, Worke
 
   public void setReporter(Reporter reporter) {
     this.reporter = reporter;
+  }
+
+  public void setEventBus(EventBus eventBus) {
+    this.eventBus = eventBus;
   }
 
   @Override
@@ -96,13 +103,17 @@ public class WorkerFactory extends BaseKeyedPooledObjectFactory<WorkerKey, Worke
 
     String msg =
         String.format(
-            "Created new %s %s %s (id %d), logging to %s",
+            "Created new %s %s %s (id %d, key hash %d), logging to %s",
             key.isSandboxed() ? "sandboxed" : "non-sandboxed",
             key.getMnemonic(),
             workTypeName,
             workerId,
+            key.hashCode(),
             worker.getLogFile());
     WorkerLoggingHelper.logMessage(reporter, WorkerLoggingHelper.LogLevel.INFO, msg);
+    if (eventBus != null) {
+      eventBus.post(new WorkerCreatedEvent(key.hashCode(), key.getMnemonic()));
+    }
     return worker;
   }
 
@@ -132,9 +143,13 @@ public class WorkerFactory extends BaseKeyedPooledObjectFactory<WorkerKey, Worke
     int workerId = p.getObject().getWorkerId();
     String msg =
         String.format(
-            "Destroying %s %s (id %d)", key.getMnemonic(), key.getWorkerTypeName(), workerId);
+            "Destroying %s %s (id %d, key hash %d)",
+            key.getMnemonic(), key.getWorkerTypeName(), workerId, key.hashCode());
     WorkerLoggingHelper.logMessage(reporter, WorkerLoggingHelper.LogLevel.INFO, msg);
     p.getObject().destroy();
+    if (eventBus != null) {
+      eventBus.post(new WorkerDestroyedEvent(key.hashCode(), key.getMnemonic()));
+    }
   }
 
   /**
@@ -144,6 +159,9 @@ public class WorkerFactory extends BaseKeyedPooledObjectFactory<WorkerKey, Worke
   @Override
   public boolean validateObject(WorkerKey key, PooledObject<Worker> p) {
     Worker worker = p.getObject();
+    if (worker.isDoomed()) {
+      return false;
+    }
     Optional<Integer> exitValue = worker.getExitValue();
     if (exitValue.isPresent()) {
       if (worker.diedUnexpectedly()) {

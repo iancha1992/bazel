@@ -16,11 +16,14 @@
 """Test utils for Bzlmod."""
 
 import base64
+import functools
 import hashlib
+import http.server
 import json
 import os
 import pathlib
 import shutil
+import threading
 import urllib.request
 import zipfile
 
@@ -63,6 +66,7 @@ class Module:
     self.module_dot_bazel = None
     self.patches = []
     self.patch_strip = 0
+    self.archive_type = None
 
   def set_source(self, archive_url, strip_prefix=None):
     self.archive_url = archive_url
@@ -76,6 +80,10 @@ class Module:
   def set_patches(self, patches, patch_strip):
     self.patches = patches
     self.patch_strip = patch_strip
+    return self
+
+  def set_archive_type(self, archive_type):
+    self.archive_type = archive_type
     return self
 
 
@@ -186,9 +194,9 @@ class BazelRegistry:
         ])
     return src_dir
 
-  def createArchive(self, name, version, src_dir):
+  def createArchive(self, name, version, src_dir, filename_pattern='%s.%s.zip'):
     """Create an archive with a given source directory."""
-    zip_path = self.archives.joinpath('%s.%s.zip' % (name, version))
+    zip_path = self.archives.joinpath(filename_pattern % (name, version))
     zip_obj = zipfile.ZipFile(str(zip_path), 'w')
     for foldername, _, filenames in os.walk(str(src_dir)):
       for filename in filenames:
@@ -225,24 +233,39 @@ class BazelRegistry:
         source['patches'][patch.name] = integrity(read(patch))
         shutil.copy(str(patch), str(patch_dir))
 
+    if module.archive_type:
+      source['archive_type'] = module.archive_type
+
     with module_dir.joinpath('source.json').open('w') as f:
       json.dump(source, f, indent=4, sort_keys=True)
 
-  def createCcModule(self,
-                     name,
-                     version,
-                     deps=None,
-                     repo_names=None,
-                     patches=None,
-                     patch_strip=0):
+  def createCcModule(
+      self,
+      name,
+      version,
+      deps=None,
+      repo_names=None,
+      patches=None,
+      patch_strip=0,
+      archive_pattern=None,
+      archive_type=None,
+  ):
     """Generate a cc project and add it as a module into the registry."""
     src_dir = self.generateCcSource(name, version, deps, repo_names)
-    archive = self.createArchive(name, version, src_dir)
+    if archive_pattern:
+      archive = self.createArchive(
+          name, version, src_dir, filename_pattern=archive_pattern
+      )
+    else:
+      archive = self.createArchive(name, version, src_dir)
     module = Module(name, version)
     module.set_source(archive.resolve().as_uri())
     module.set_module_dot_bazel(src_dir.joinpath('MODULE.bazel'))
     if patches:
       module.set_patches(patches, patch_strip)
+    if archive_type:
+      module.set_archive_type(archive_type)
+
     self.addModule(module)
     return self
 
@@ -299,3 +322,62 @@ class BazelRegistry:
 
     with module_dir.joinpath('source.json').open('w') as f:
       json.dump(source, f, indent=4, sort_keys=True)
+
+
+class StaticHTTPServer:
+  """An HTTP server serving static files, optionally with authentication."""
+
+  def __init__(self, root_directory, expected_auth=None):
+    self.root_directory = root_directory
+    self.expected_auth = expected_auth
+
+  def __enter__(self):
+    address = ('localhost', 0)  # assign random port
+    handler = functools.partial(
+        _Handler, self.root_directory, self.expected_auth
+    )
+    self.httpd = http.server.HTTPServer(address, handler)
+    self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+    self.thread.start()
+    return self
+
+  def __exit__(self, exc_type, exc_value, traceback):
+    self.httpd.shutdown()
+    self.thread.join()
+
+  def getURL(self):
+    return 'http://{}:{}'.format(*self.httpd.server_address)
+
+
+class _Handler(http.server.SimpleHTTPRequestHandler):
+  """A SimpleHTTPRequestHandler with authentication."""
+
+  # Note: until Python 3.6, SimpleHTTPRequestHandler was only able to serve
+  # files from the working directory. A 'directory' parameter was added in
+  # Python 3.7, but sadly our CI builds are stuck with Python 3.6. Instead,
+  # we monkey-patch translate_path() to rewrite the path.
+
+  def __init__(self, root_directory, expected_auth, *args, **kwargs):
+    self.root_directory = root_directory
+    self.expected_auth = expected_auth
+    super().__init__(*args, **kwargs)
+
+  def translate_path(self, path):
+    abs_path = super().translate_path(path)
+    rel_path = os.path.relpath(abs_path, os.getcwd())
+    return os.path.join(self.root_directory, rel_path)
+
+  def check_auth(self):
+    auth_header = self.headers.get('Authorization', None)
+    if auth_header != self.expected_auth:
+      self.send_error(http.HTTPStatus.UNAUTHORIZED)
+      return False
+    return True
+
+  def do_HEAD(self):
+    if self.check_auth():
+      return super().do_HEAD()
+
+  def do_GET(self):
+    if self.check_auth():
+      return super().do_GET()

@@ -41,15 +41,14 @@ import com.google.devtools.build.lib.actions.ActionContext;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ActionInputHelper;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
+import com.google.devtools.build.lib.actions.ArtifactPathResolver;
 import com.google.devtools.build.lib.actions.ExecutionRequirements;
 import com.google.devtools.build.lib.actions.ForbiddenActionInputException;
-import com.google.devtools.build.lib.actions.MetadataProvider;
+import com.google.devtools.build.lib.actions.InputMetadataProvider;
 import com.google.devtools.build.lib.actions.ResourceSet;
 import com.google.devtools.build.lib.actions.SimpleSpawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
-import com.google.devtools.build.lib.actions.cache.MetadataInjector;
-import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.clock.JavaClock;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
@@ -59,7 +58,6 @@ import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.events.StoredEventHandler;
 import com.google.devtools.build.lib.exec.SpawnCache.CacheHandle;
 import com.google.devtools.build.lib.exec.SpawnCheckingCacheEvent;
-import com.google.devtools.build.lib.exec.SpawnExecutingEvent;
 import com.google.devtools.build.lib.exec.SpawnInputExpander;
 import com.google.devtools.build.lib.exec.SpawnRunner.ProgressStatus;
 import com.google.devtools.build.lib.exec.SpawnRunner.SpawnExecutionContext;
@@ -89,7 +87,6 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.SortedMap;
 import javax.annotation.Nullable;
 import org.junit.Before;
@@ -105,6 +102,9 @@ import org.mockito.stubbing.Answer;
 /** Tests for {@link RemoteSpawnCache}. */
 @RunWith(JUnit4.class)
 public class RemoteSpawnCacheTest {
+  private static final RemoteOutputChecker DUMMY_REMOTE_OUTPUT_CHECKER =
+      new RemoteOutputChecker(
+          new JavaClock(), "build", /* downloadToplevel= */ false, ImmutableList.of());
   private static final ArtifactExpander SIMPLE_ARTIFACT_EXPANDER =
       (artifact, output) -> output.add(artifact);
 
@@ -147,8 +147,13 @@ public class RemoteSpawnCacheTest {
         }
 
         @Override
-        public MetadataProvider getMetadataProvider() {
+        public InputMetadataProvider getInputMetadataProvider() {
           return fakeFileCache;
+        }
+
+        @Override
+        public ArtifactPathResolver getPathResolver() {
+          return ArtifactPathResolver.forExecRoot(execRoot);
         }
 
         @Override
@@ -172,7 +177,8 @@ public class RemoteSpawnCacheTest {
         }
 
         @Override
-        public SortedMap<PathFragment, ActionInput> getInputMapping(PathFragment baseDirectory)
+        public SortedMap<PathFragment, ActionInput> getInputMapping(
+            PathFragment baseDirectory, boolean willAccessRepeatedly)
             throws IOException, ForbiddenActionInputException {
           return getSpawnInputExpander()
               .getInputMapping(simpleSpawn, SIMPLE_ARTIFACT_EXPANDER, baseDirectory, fakeFileCache);
@@ -181,11 +187,6 @@ public class RemoteSpawnCacheTest {
         @Override
         public void report(ProgressStatus progress) {
           progressUpdates.add(progress);
-        }
-
-        @Override
-        public MetadataInjector getMetadataInjector() {
-          return ActionsTestUtil.THROWING_METADATA_HANDLER;
         }
 
         @Override
@@ -231,7 +232,7 @@ public class RemoteSpawnCacheTest {
             new RemoteExecutionService(
                 directExecutor(),
                 reporter,
-                /*verboseFailures=*/ true,
+                /* verboseFailures= */ true,
                 execRoot,
                 remotePathResolver,
                 BUILD_REQUEST_ID,
@@ -241,7 +242,8 @@ public class RemoteSpawnCacheTest {
                 remoteCache,
                 null,
                 tempPathGenerator,
-                /* captureCorruptedOutputsDir= */ null));
+                /* captureCorruptedOutputsDir= */ null,
+                DUMMY_REMOTE_OUTPUT_CHECKER));
     return new RemoteSpawnCache(execRoot, options, /* verboseFailures=*/ true, service);
   }
 
@@ -319,10 +321,9 @@ public class RemoteSpawnCacheTest {
     verify(service, never()).uploadOutputs(any(), any());
     assertThat(result.getDigest())
         .isEqualTo(
-            Optional.of(
-                SpawnResult.Digest.of(
-                    actionKeyCaptor.getValue().getDigest().getHash(),
-                    actionKeyCaptor.getValue().getDigest().getSizeBytes())));
+            SpawnResult.Digest.of(
+                actionKeyCaptor.getValue().getDigest().getHash(),
+                actionKeyCaptor.getValue().getDigest().getSizeBytes()));
     assertThat(result.setupSuccess()).isTrue();
     assertThat(result.exitCode()).isEqualTo(0);
     assertThat(result.isCacheHit()).isTrue();
@@ -347,10 +348,7 @@ public class RemoteSpawnCacheTest {
     doNothing().when(service).uploadOutputs(any(), any());
     entry.store(result);
     verify(service).uploadOutputs(any(), any());
-    assertThat(progressUpdates)
-        .containsExactly(
-            SpawnCheckingCacheEvent.create("remote-cache"),
-            SpawnExecutingEvent.create("remote-cache"));
+    assertThat(progressUpdates).containsExactly(SpawnCheckingCacheEvent.create("remote-cache"));
   }
 
   @Test
@@ -503,10 +501,7 @@ public class RemoteSpawnCacheTest {
             .build();
     entry.store(result);
     verify(service, never()).uploadOutputs(any(), any());
-    assertThat(progressUpdates)
-        .containsExactly(
-            SpawnCheckingCacheEvent.create("remote-cache"),
-            SpawnExecutingEvent.create("remote-cache"));
+    assertThat(progressUpdates).containsExactly(SpawnCheckingCacheEvent.create("remote-cache"));
   }
 
   @Test
@@ -537,10 +532,7 @@ public class RemoteSpawnCacheTest {
     Event evt = eventHandler.getEvents().get(0);
     assertThat(evt.getKind()).isEqualTo(EventKind.WARNING);
     assertThat(evt.getMessage()).contains("UNAVAILABLE");
-    assertThat(progressUpdates)
-        .containsExactly(
-            SpawnCheckingCacheEvent.create("remote-cache"),
-            SpawnExecutingEvent.create("remote-cache"));
+    assertThat(progressUpdates).containsExactly(SpawnCheckingCacheEvent.create("remote-cache"));
   }
 
   @Test
@@ -584,10 +576,7 @@ public class RemoteSpawnCacheTest {
     doNothing().when(service).uploadOutputs(any(), any());
     entry.store(result);
     verify(service).uploadOutputs(any(), eq(result));
-    assertThat(progressUpdates)
-        .containsExactly(
-            SpawnCheckingCacheEvent.create("remote-cache"),
-            SpawnExecutingEvent.create("remote-cache"));
+    assertThat(progressUpdates).containsExactly(SpawnCheckingCacheEvent.create("remote-cache"));
     assertThat(eventHandler.getEvents()).isEmpty(); // no warning is printed.
   }
 

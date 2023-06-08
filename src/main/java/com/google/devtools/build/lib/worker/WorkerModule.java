@@ -36,7 +36,7 @@ import com.google.devtools.build.lib.sandbox.SandboxHelpers;
 import com.google.devtools.build.lib.sandbox.SandboxOptions;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.worker.SandboxedWorker.WorkerSandboxOptions;
-import com.google.devtools.build.lib.worker.WorkerPool.WorkerPoolConfig;
+import com.google.devtools.build.lib.worker.WorkerPoolImpl.WorkerPoolConfig;
 import com.google.devtools.common.options.OptionsBase;
 import java.io.IOException;
 import javax.annotation.Nullable;
@@ -46,7 +46,7 @@ public class WorkerModule extends BlazeModule {
   private CommandEnvironment env;
 
   private WorkerFactory workerFactory;
-  @VisibleForTesting WorkerPool workerPool;
+  @VisibleForTesting WorkerPoolImpl workerPool;
   @Nullable private WorkerLifecycleManager workerLifecycleManager;
 
   @Override
@@ -68,6 +68,7 @@ public class WorkerModule extends BlazeModule {
     if (workerPool != null) {
       WorkerOptions options = event.getOptionsProvider().getOptions(WorkerOptions.class);
       workerFactory.setReporter(options.workerVerbose ? env.getReporter() : null);
+      workerFactory.setEventBus(env.getEventBus());
       shutdownPool(
           "Clean command is running, shutting down worker pool...",
           /* alwaysLog= */ false,
@@ -85,6 +86,7 @@ public class WorkerModule extends BlazeModule {
     WorkerOptions options = checkNotNull(event.request().getOptions(WorkerOptions.class));
     if (workerFactory != null) {
       workerFactory.setReporter(options.workerVerbose ? env.getReporter() : null);
+      workerFactory.setEventBus(env.getEventBus());
     }
     Path workerDir =
         env.getOutputBase().getRelative(env.getRuntime().getProductName() + "-workers");
@@ -99,7 +101,10 @@ public class WorkerModule extends BlazeModule {
               sandboxOptions.sandboxFakeUsername,
               sandboxOptions.sandboxDebug,
               ImmutableList.copyOf(sandboxOptions.sandboxTmpfsPath),
-              ImmutableList.copyOf(sandboxOptions.sandboxWritablePath));
+              ImmutableList.copyOf(sandboxOptions.sandboxWritablePath),
+              sandboxOptions.memoryLimitMb,
+              sandboxOptions.getInaccessiblePaths(env.getRuntime().getFileSystem()),
+              ImmutableList.copyOf(sandboxOptions.sandboxAdditionalMounts));
     } else {
       workerSandboxOptions = null;
     }
@@ -138,14 +143,12 @@ public class WorkerModule extends BlazeModule {
           options.workerVerbose);
       workerFactory = newWorkerFactory;
       workerFactory.setReporter(options.workerVerbose ? env.getReporter() : null);
+      workerFactory.setEventBus(env.getEventBus());
     }
 
     WorkerPoolConfig newConfig =
         new WorkerPoolConfig(
-            workerFactory,
-            options.workerMaxInstances,
-            options.workerMaxMultiplexInstances,
-            options.highPriorityWorkers);
+            workerFactory, options.workerMaxInstances, options.workerMaxMultiplexInstances);
 
     // If the config changed compared to the last run, we have to create a new pool.
     if (workerPool == null || !newConfig.equals(workerPool.getWorkerPoolConfig())) {
@@ -156,15 +159,23 @@ public class WorkerModule extends BlazeModule {
     }
 
     if (workerPool == null) {
-      workerPool = new WorkerPool(newConfig);
+      workerPool = new WorkerPoolImpl(newConfig);
       // If workerPool is restarted then we should recreate metrics.
       WorkerMetricsCollector.instance().clear();
     }
 
     // Start collecting after a pool is defined
     workerLifecycleManager = new WorkerLifecycleManager(workerPool, options);
+    if (options.workerVerbose) {
+      workerLifecycleManager.setReporter(env.getReporter());
+    }
+    workerLifecycleManager.setEventBus(env.getEventBus());
     workerLifecycleManager.setDaemon(true);
     workerLifecycleManager.start();
+
+    workerPool.setEventBus(env.getEventBus());
+    // Clean doomed workers on the beginning of a build.
+    workerPool.clearDoomedWorkers();
   }
 
   @Override
@@ -176,6 +187,7 @@ public class WorkerModule extends BlazeModule {
         new WorkerSpawnRunner(
             new SandboxHelpers(),
             env.getExecRoot(),
+            env.getPackageLocator().getPathEntries(),
             workerPool,
             env.getReporter(),
             localEnvProvider,
@@ -190,8 +202,7 @@ public class WorkerModule extends BlazeModule {
     ExecutionOptions executionOptions =
         checkNotNull(env.getOptions().getOptions(ExecutionOptions.class));
     registryBuilder.registerStrategy(
-        new WorkerSpawnStrategy(env.getExecRoot(), spawnRunner, executionOptions.verboseFailures),
-        "worker");
+        new WorkerSpawnStrategy(env.getExecRoot(), spawnRunner, executionOptions), "worker");
   }
 
   @Subscribe
@@ -229,6 +240,10 @@ public class WorkerModule extends BlazeModule {
 
     if (this.workerFactory != null) {
       this.workerFactory.setReporter(null);
+      this.workerFactory.setEventBus(null);
+    }
+    if (this.workerPool != null) {
+      this.workerPool.setEventBus(null);
     }
     WorkerMultiplexerManager.afterCommand();
   }

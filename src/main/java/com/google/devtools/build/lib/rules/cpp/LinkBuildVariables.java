@@ -23,6 +23,7 @@ import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.FeatureConfig
 import com.google.devtools.build.lib.rules.cpp.CcToolchainVariables.SequenceBuilder;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.StarlarkThread;
 
 /** Enum covering all build variables we create for all various {@link CppLinkAction}. */
 public enum LinkBuildVariables {
@@ -97,6 +98,7 @@ public enum LinkBuildVariables {
   }
 
   public static CcToolchainVariables setupVariables(
+      StarlarkThread thread,
       boolean isUsingLinkerNotArchiver,
       PathFragment binDirectoryPath,
       String outputFile,
@@ -122,10 +124,10 @@ public enum LinkBuildVariables {
       SequenceBuilder librariesToLink,
       NestedSet<String> librarySearchDirectories,
       boolean addIfsoRelatedVariables)
-      throws EvalException {
+      throws EvalException, InterruptedException {
     CcToolchainVariables.Builder buildVariables =
         CcToolchainVariables.builder(
-            ccToolchainProvider.getBuildVariables(buildOptions, cppConfiguration));
+            ccToolchainProvider.getBuildVariables(thread, buildOptions, cppConfiguration));
 
     // pic
     if (cppConfiguration.forcePic()) {
@@ -143,11 +145,7 @@ public enum LinkBuildVariables {
     }
 
     if (!cppConfiguration.useCcTestFeature()) {
-      if (useTestOnlyFlags) {
-        buildVariables.addIntegerVariable(IS_CC_TEST.getVariableName(), 1);
-      } else {
-        buildVariables.addIntegerVariable(IS_CC_TEST.getVariableName(), 0);
-      }
+      buildVariables.addBooleanValue(IS_CC_TEST.getVariableName(), useTestOnlyFlags);
     }
 
     if (runtimeLibrarySearchDirectories != null) {
@@ -187,11 +185,13 @@ public enum LinkBuildVariables {
         // TODO(b/33846234): Remove once all the relevant crosstools don't depend on the variable.
         buildVariables.addStringVariable("thinlto_optional_params_file", "");
       }
+      // Given "fullbitcode_prefix;thinlto_index_prefix", replaces fullbitcode_prefix with
+      // thinlto_index_prefix to generate the index and imports files.
+      // fullbitcode_prefix is the empty string because we are appending a prefix to the fullbitcode
+      // instead of replacing it. This argument is passed to the linker.
       buildVariables.addStringVariable(
           THINLTO_PREFIX_REPLACE.getVariableName(),
-          binDirectoryPath.getSafePathString()
-              + ";"
-              + binDirectoryPath.getRelative(ltoOutputRootPrefix));
+          ";" + binDirectoryPath.getRelative(ltoOutputRootPrefix) + '/');
       String objectFileExtension =
           ccToolchainProvider
               .getFeatures()

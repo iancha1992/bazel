@@ -62,7 +62,7 @@ public interface TemplateDictApi extends StarlarkValue {
             doc =
                 "A delimiter string used to join together the strings obtained from applying "
                     + "<code>map_each</code>, in the same manner as "
-                    + "<a href='string.html#join'><code>string.join()</code></a>."),
+                    + "<a href='../core/string.html#join'><code>string.join()</code></a>."),
         @Param(
             name = "map_each",
             allowedTypes = {
@@ -71,9 +71,9 @@ public interface TemplateDictApi extends StarlarkValue {
             named = true,
             positional = false,
             doc =
-                "A Starlark function accepting a single argument and returning a String. This"
-                    + " function is applied to each item of the depset specified in the"
-                    + " <code>values</code> parameter"),
+                "A Starlark function accepting a single argument and returning either a string, "
+                    + "<code>None</code>, or a list of strings. This function is applied to each "
+                    + "item of the depset specified in the <code>values</code> parameter"),
         @Param(
             name = "uniquify",
             named = true,

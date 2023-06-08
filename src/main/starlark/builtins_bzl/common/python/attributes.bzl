@@ -15,7 +15,6 @@
 
 load(":common/python/common.bzl", "union_attrs")
 load(":common/python/providers.bzl", "PyInfo")
-load(":blaze/common/toplevel_aliases.bzl", "CcInfo")
 load(
     ":common/python/semantics.bzl",
     "DEPS_ATTR_ALLOW_RULES",
@@ -23,6 +22,7 @@ load(
     "SRCS_ATTR_ALLOW_FILES",
     "TOOLS_REPO",
 )
+load(":common/cc/cc_info.bzl", _CcInfo = "CcInfo")
 
 _STAMP_VALUES = [-1, 0, 1]
 
@@ -81,9 +81,20 @@ DATA_ATTRS = {
     ),
 }
 
+NATIVE_RULES_ALLOWLIST_ATTRS = {
+    "_native_rules_allowlist": attr.label(
+        default = configuration_field(
+            fragment = "py",
+            name = "native_rules_allowlist",
+        ),
+        providers = ["PackageSpecificationProvider"],
+    ),
+}
+
 # Attributes common to all rules.
 COMMON_ATTRS = union_attrs(
     DATA_ATTRS,
+    NATIVE_RULES_ALLOWLIST_ATTRS,
     {
         # TODO(b/148103851): This attribute is deprecated and slated for
         # removal.
@@ -104,7 +115,7 @@ PY_SRCS_ATTRS = union_attrs(
         # Use create_srcs_attr to create one.
         "srcs": None,
         "deps": attr.label_list(
-            providers = [[PyInfo], [CcInfo]],
+            providers = [[PyInfo], [_CcInfo]],
             # TODO(b/228692666): Google-specific; remove these allowances once
             # the depot is cleaned up.
             allow_rules = DEPS_ATTR_ALLOW_RULES,

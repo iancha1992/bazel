@@ -141,7 +141,8 @@ public class ObjcBuildVariablesTest extends LinkBuildVariablesTestCase {
         ActionsTestUtil.getFirstArtifactEndingWith(appleBinLinkAction.getInputs(), "liba.a");
     CppLinkAction ccArchiveAction = (CppLinkAction) getGeneratingAction(archive);
 
-    CcToolchainVariables variables = ccArchiveAction.getLinkCommandLine().getBuildVariables();
+    CcToolchainVariables variables =
+        ccArchiveAction.getLinkCommandLineForTesting().getBuildVariables();
     assertThat(
             getVariableValue(
                 getRuleContext(), variables, AppleCcToolchain.XCODE_VERSION_OVERRIDE_VALUE_KEY))
@@ -193,7 +194,8 @@ public class ObjcBuildVariablesTest extends LinkBuildVariablesTestCase {
         ActionsTestUtil.getFirstArtifactEndingWith(appleBinLinkAction.getInputs(), "liba.a");
     CppLinkAction ccArchiveAction = (CppLinkAction) getGeneratingAction(archive);
 
-    CcToolchainVariables variables = ccArchiveAction.getLinkCommandLine().getBuildVariables();
+    CcToolchainVariables variables =
+        ccArchiveAction.getLinkCommandLineForTesting().getBuildVariables();
     assertThat(getVariableValue(getRuleContext(), variables, AppleCcToolchain.VERSION_MIN_KEY))
         .contains(dummyMinimumOsValue);
   }
@@ -223,7 +225,7 @@ public class ObjcBuildVariablesTest extends LinkBuildVariablesTestCase {
         ")");
     scratch.file("x/a.cc");
 
-    ConfiguredTarget target = getHostConfiguredTarget("//x:bin");
+    ConfiguredTarget target = getExecConfiguredTarget("//x:bin");
     Artifact lipoBin =
         getBinArtifact(Label.parseCanonical("//x:bin").getName() + "_lipobin", target);
     Action lipoAction = getGeneratingAction(lipoBin);
@@ -233,7 +235,8 @@ public class ObjcBuildVariablesTest extends LinkBuildVariablesTestCase {
         ActionsTestUtil.getFirstArtifactEndingWith(appleBinLinkAction.getInputs(), "liba.a");
     CppLinkAction ccArchiveAction = (CppLinkAction) getGeneratingAction(archive);
 
-    CcToolchainVariables variables = ccArchiveAction.getLinkCommandLine().getBuildVariables();
+    CcToolchainVariables variables =
+        ccArchiveAction.getLinkCommandLineForTesting().getBuildVariables();
     assertThat(getVariableValue(getRuleContext(), variables, AppleCcToolchain.VERSION_MIN_KEY))
         .contains(dummyMinimumOsValue);
   }
@@ -300,7 +303,8 @@ public class ObjcBuildVariablesTest extends LinkBuildVariablesTestCase {
         ActionsTestUtil.getFirstArtifactEndingWith(appleBinLinkAction.getInputs(), "liba.a");
     CppLinkAction ccArchiveAction = (CppLinkAction) getGeneratingAction(archive);
 
-    CcToolchainVariables variables = ccArchiveAction.getLinkCommandLine().getBuildVariables();
+    CcToolchainVariables variables =
+        ccArchiveAction.getLinkCommandLineForTesting().getBuildVariables();
     assertThat(getVariableValue(getRuleContext(), variables, AppleCcToolchain.VERSION_MIN_KEY))
         .contains(dummyMinimumOsValue);
   }

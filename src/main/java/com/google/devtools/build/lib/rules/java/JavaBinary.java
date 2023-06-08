@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.rules.java;
 
 import static com.google.devtools.build.lib.collect.nestedset.Order.STABLE_ORDER;
+import static com.google.devtools.build.lib.packages.ExecGroup.DEFAULT_EXEC_GROUP_NAME;
 import static com.google.devtools.build.lib.packages.Type.BOOLEAN;
 import static com.google.devtools.build.lib.rules.cpp.CppRuleClasses.JAVA_LAUNCHER_LINK;
 import static com.google.devtools.build.lib.rules.cpp.CppRuleClasses.STATIC_LINKING_MODE;
@@ -277,9 +278,8 @@ public class JavaBinary implements RuleConfiguredTargetFactory {
     JavaModuleFlagsProvider javaModuleFlagsProvider =
         JavaModuleFlagsProvider.create(
             ruleContext,
-            JavaInfo.getProvidersFromListOfTargets(
-                JavaModuleFlagsProvider.class, common.targetsTreatedAsDeps(ClasspathType.BOTH))
-                .stream());
+            common.targetsTreatedAsDeps(ClasspathType.BOTH).stream()
+                .map(JavaInfo::moduleFlagsProvider));
 
     javaModuleFlagsProvider.toFlags().stream()
         // Share strings in the heap with the equivalent javacopt flags, which are also interned
@@ -326,7 +326,10 @@ public class JavaBinary implements RuleConfiguredTargetFactory {
         semantics,
         NestedSetBuilder.<Artifact>emptySet(Order.STABLE_ORDER),
         transitiveSourceJars,
-        ruleContext.getImplicitOutputArtifact(JavaSemantics.JAVA_BINARY_DEPLOY_SOURCE_JAR));
+        ruleContext.getImplicitOutputArtifact(JavaSemantics.JAVA_BINARY_DEPLOY_SOURCE_JAR),
+        ruleContext.useAutoExecGroups()
+            ? semantics.getJavaToolchainType()
+            : DEFAULT_EXEC_GROUP_NAME);
 
     RuleConfiguredTargetBuilder builder = new RuleConfiguredTargetBuilder(ruleContext);
     builder.add(
@@ -407,6 +410,7 @@ public class JavaBinary implements RuleConfiguredTargetFactory {
     ImmutableList<String> deployManifestLines =
         getDeployManifestLines(ruleContext, originalMainClass);
 
+    // Create the java_binary target specific CDS archive.
     Artifact jsa = createSharedArchive(ruleContext, javaArtifacts, attributes);
 
     if (ruleContext.isAttrDefined("hermetic", BOOLEAN)
@@ -423,6 +427,13 @@ public class JavaBinary implements RuleConfiguredTargetFactory {
             .setJavaHome(javaRuntime.javaHomePathFragment())
             .setLibModules(javaRuntime.libModules())
             .setHermeticInputs(javaRuntime.hermeticInputs());
+      }
+
+      if (jsa == null) {
+        // Use the JDK default CDS specified by the JavaRuntime if the
+        // java_binary target specific CDS archive is null, when building
+        // a hermetic deploy JAR.
+        jsa = javaRuntime.defaultCDS();
       }
     }
 
@@ -590,8 +601,8 @@ public class JavaBinary implements RuleConfiguredTargetFactory {
 
     JavaInfo javaInfo =
         javaInfoBuilder
-            .addProvider(JavaSourceJarsProvider.class, sourceJarsProvider)
-            .addProvider(JavaRuleOutputJarsProvider.class, ruleOutputJarsProvider)
+            .javaSourceJars(sourceJarsProvider)
+            .javaRuleOutputs(ruleOutputJarsProvider)
             .build();
 
     return builder

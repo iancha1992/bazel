@@ -24,7 +24,11 @@ import com.google.common.collect.ImmutableBiMap;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.devtools.build.docgen.annot.DocumentMethods;
+import com.google.common.collect.ImmutableSet;
+import com.google.devtools.build.docgen.annot.GlobalMethods;
+import com.google.devtools.build.docgen.annot.GlobalMethods.Environment;
+import com.google.devtools.build.lib.bazel.bzlmod.InterimModule.DepSpec;
+import com.google.devtools.build.lib.bazel.bzlmod.ModuleFileGlobals.ModuleExtensionUsageBuilder.ModuleExtensionProxy;
 import com.google.devtools.build.lib.bazel.bzlmod.Version.ParseException;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import java.util.ArrayList;
@@ -50,7 +54,7 @@ import net.starlark.java.eval.Tuple;
 import net.starlark.java.syntax.Location;
 
 /** A collection of global Starlark build API functions that apply to MODULE.bazel files. */
-@DocumentMethods
+@GlobalMethods(environment = Environment.MODULE)
 public class ModuleFileGlobals {
 
   /* Valid bazel compatibility argument must 1) start with (<,<=,>,>=,-);
@@ -60,10 +64,11 @@ public class ModuleFileGlobals {
       Pattern.compile("(>|<|-|<=|>=)(\\d+\\.){2}\\d+");
 
   private boolean moduleCalled = false;
+  private boolean hadNonModuleCall = false;
   private final boolean ignoreDevDeps;
-  private final Module.Builder module;
-  private final Map<String, ModuleKey> deps = new LinkedHashMap<>();
-  private final List<ModuleExtensionProxy> extensionProxies = new ArrayList<>();
+  private final InterimModule.Builder module;
+  private final Map<String, DepSpec> deps = new LinkedHashMap<>();
+  private final List<ModuleExtensionUsageBuilder> extensionUsageBuilders = new ArrayList<>();
   private final Map<String, ModuleOverride> overrides = new HashMap<>();
   private final Map<String, RepoNameUsage> repoNameUsages = new HashMap<>();
 
@@ -72,7 +77,7 @@ public class ModuleFileGlobals {
       ModuleKey key,
       @Nullable Registry registry,
       boolean ignoreDevDeps) {
-    module = Module.builder().setKey(key).setRegistry(registry);
+    module = InterimModule.builder().setKey(key).setRegistry(registry);
     this.ignoreDevDeps = ignoreDevDeps;
     if (ModuleKey.ROOT.equals(key)) {
       overrides.putAll(builtinModules);
@@ -82,7 +87,7 @@ public class ModuleFileGlobals {
         // The built-in module does not depend on itself.
         continue;
       }
-      deps.put(builtinModule, ModuleKey.create(builtinModule, Version.EMPTY));
+      deps.put(builtinModule, DepSpec.create(builtinModule, Version.EMPTY, -1));
       try {
         addRepoNameUsage(builtinModule, "as a built-in dependency", Location.BUILTIN);
       } catch (EvalException e) {
@@ -141,26 +146,28 @@ public class ModuleFileGlobals {
             defaultValue = "''"),
         @Param(
             name = "version",
-            // TODO(wyv): explain version format
             doc =
                 "The version of the module. Can be omitted only if this module is the root module"
-                    + " (as in, if it's not going to be depended on by another module).",
+                    + " (as in, if it's not going to be depended on by another module). The version"
+                    + " must be in a relaxed SemVer format; see <a"
+                    + " href=\"/external/module#version_format\">the documentation</a> for more"
+                    + " details.",
             named = true,
             positional = false,
             defaultValue = "''"),
         @Param(
             name = "compatibility_level",
-            // TODO(wyv): See X for more details
             doc =
                 "The compatibility level of the module; this should be changed every time a major"
                     + " incompatible change is introduced. This is essentially the \"major"
                     + " version\" of the module in terms of SemVer, except that it's not embedded"
                     + " in the version string itself, but exists as a separate field. Modules with"
                     + " different compatibility levels participate in version resolution as if"
-                    + " they're modules with different names, but the final dependency graph"
-                    + " cannot contain multiple modules with the same name but different"
-                    + " compatibility levels (unless <code>multiple_version_override</code> is in"
-                    + " effect; see there for more details).",
+                    + " they're modules with different names, but the final dependency graph cannot"
+                    + " contain multiple modules with the same name but different compatibility"
+                    + " levels (unless <code>multiple_version_override</code> is in effect). See <a"
+                    + " href=\"/external/module#compatibility_level\">the documentation</a> for"
+                    + " more details.",
             named = true,
             positional = false,
             defaultValue = "0"),
@@ -204,6 +211,9 @@ public class ModuleFileGlobals {
       throws EvalException {
     if (moduleCalled) {
       throw Starlark.errorf("the module() directive can only be called once");
+    }
+    if (hadNonModuleCall) {
+      throw Starlark.errorf("if module() is called, it must be called before any other functions");
     }
     moduleCalled = true;
     if (!name.isEmpty()) {
@@ -275,6 +285,16 @@ public class ModuleFileGlobals {
             positional = false,
             defaultValue = "''"),
         @Param(
+            name = "max_compatibility_level",
+            doc =
+                "The maximum <code>compatibility_level</code> supported for the module to be added"
+                    + " as a direct dependency. The version of the module implies the minimum"
+                    + " compatibility_level supported, as well as the maximum if this attribute is"
+                    + " not specified.",
+            named = true,
+            positional = false,
+            defaultValue = "-1"),
+        @Param(
             name = "repo_name",
             doc =
                 "The name of the external repo representing this dependency. This is by default the"
@@ -293,8 +313,14 @@ public class ModuleFileGlobals {
       },
       useStarlarkThread = true)
   public void bazelDep(
-      String name, String version, String repoName, boolean devDependency, StarlarkThread thread)
+      String name,
+      String version,
+      StarlarkInt maxCompatibilityLevel,
+      String repoName,
+      boolean devDependency,
+      StarlarkThread thread)
       throws EvalException {
+    hadNonModuleCall = true;
     if (repoName.isEmpty()) {
       repoName = name;
     }
@@ -308,7 +334,10 @@ public class ModuleFileGlobals {
     RepositoryName.validateUserProvidedRepoName(repoName);
 
     if (!(ignoreDevDeps && devDependency)) {
-      deps.put(repoName, ModuleKey.create(name, parsedVersion));
+      deps.put(
+          repoName,
+          DepSpec.create(
+              name, parsedVersion, maxCompatibilityLevel.toInt("max_compatibility_level")));
     }
 
     addRepoNameUsage(repoName, "by a bazel_dep", thread.getCallerLocation());
@@ -321,12 +350,27 @@ public class ModuleFileGlobals {
               + " selected. Should be absolute target patterns (ie. beginning with either"
               + " <code>@</code> or <code>//</code>). See <a href=\"${link toolchains}\">toolchain"
               + " resolution</a> for more information.",
+      parameters = {
+        @Param(
+            name = "dev_dependency",
+            doc =
+                "If true, the execution platforms will not be registered if the current module is"
+                    + " not the root module or `--ignore_dev_dependency` is enabled.",
+            named = true,
+            positional = false,
+            defaultValue = "False"),
+      },
       extraPositionals =
           @Param(
               name = "platform_labels",
               allowedTypes = {@ParamType(type = Sequence.class, generic1 = String.class)},
               doc = "The labels of the platforms to register."))
-  public void registerExecutionPlatforms(Sequence<?> platformLabels) throws EvalException {
+  public void registerExecutionPlatforms(boolean devDependency, Sequence<?> platformLabels)
+      throws EvalException {
+    hadNonModuleCall = true;
+    if (ignoreDevDeps && devDependency) {
+      return;
+    }
     module.addExecutionPlatformsToRegister(
         checkAllAbsolutePatterns(platformLabels, "register_execution_platforms"));
   }
@@ -338,12 +382,30 @@ public class ModuleFileGlobals {
               + " Should be absolute target patterns (ie. beginning with either <code>@</code> or"
               + " <code>//</code>). See <a href=\"${link toolchains}\">toolchain resolution</a> for"
               + " more information.",
+      parameters = {
+        @Param(
+            name = "dev_dependency",
+            doc =
+                "If true, the toolchains will not be registered if the current module is not the"
+                    + " root module or `--ignore_dev_dependency` is enabled.",
+            named = true,
+            positional = false,
+            defaultValue = "False"),
+      },
       extraPositionals =
           @Param(
               name = "toolchain_labels",
               allowedTypes = {@ParamType(type = Sequence.class, generic1 = String.class)},
-              doc = "The labels of the toolchains to register."))
-  public void registerToolchains(Sequence<?> toolchainLabels) throws EvalException {
+              doc =
+                  "The labels of the toolchains to register. Labels can include "
+                      + "<code>:all</code>, in which case, all toolchain-providing targets in the "
+                      + "package will be registered in lexicographical order by name."))
+  public void registerToolchains(boolean devDependency, Sequence<?> toolchainLabels)
+      throws EvalException {
+    hadNonModuleCall = true;
+    if (ignoreDevDeps && devDependency) {
+      return;
+    }
     module.addToolchainsToRegister(
         checkAllAbsolutePatterns(toolchainLabels, "register_toolchains"));
   }
@@ -373,42 +435,66 @@ public class ModuleFileGlobals {
       },
       useStarlarkThread = true)
   public ModuleExtensionProxy useExtension(
-      String extensionBzlFile, String extensionName, boolean devDependency, StarlarkThread thread)
-      throws EvalException {
-    ModuleExtensionProxy newProxy =
-        new ModuleExtensionProxy(extensionBzlFile, extensionName, thread.getCallerLocation());
+      String rawExtensionBzlFile,
+      String extensionName,
+      boolean devDependency,
+      StarlarkThread thread) {
+    hadNonModuleCall = true;
+
+    String extensionBzlFile = normalizeLabelString(rawExtensionBzlFile);
+
+    ModuleExtensionUsageBuilder newUsageBuilder =
+        new ModuleExtensionUsageBuilder(
+            extensionBzlFile, extensionName, thread.getCallerLocation());
 
     if (ignoreDevDeps && devDependency) {
       // This is a no-op proxy.
-      return newProxy;
+      return newUsageBuilder.getProxy(devDependency);
     }
 
-    // Find an existing proxy object corresponding to this extension.
-    for (ModuleExtensionProxy proxy : extensionProxies) {
-      if (proxy.extensionBzlFile.equals(extensionBzlFile)
-          && proxy.extensionName.equals(extensionName)) {
-        return proxy;
+    // Find an existing usage builder corresponding to this extension.
+    for (ModuleExtensionUsageBuilder usageBuilder : extensionUsageBuilders) {
+      if (usageBuilder.extensionBzlFile.equals(extensionBzlFile)
+          && usageBuilder.extensionName.equals(extensionName)) {
+        return usageBuilder.getProxy(devDependency);
       }
     }
 
     // If no such proxy exists, we can just use a new one.
-    extensionProxies.add(newProxy);
-    return newProxy;
+    extensionUsageBuilders.add(newUsageBuilder);
+    return newUsageBuilder.getProxy(devDependency);
   }
 
-  @StarlarkBuiltin(name = "module_extension_proxy", documented = false)
-  class ModuleExtensionProxy implements Structure {
+  private String normalizeLabelString(String rawExtensionBzlFile) {
+    // Normalize the label by adding the current module's repo_name if the label doesn't specify a
+    // repository name. This is necessary as ModuleExtensionUsages are grouped by the string value
+    // of this label, but later mapped to their Label representation. If multiple strings map to the
+    // same Label, this would result in a crash.
+    // ownName can't change anymore as calling module() after this results in an error.
+    String ownName = module.getRepoName().orElse(module.getName());
+    if (module.getKey().equals(ModuleKey.ROOT) && rawExtensionBzlFile.startsWith("@//")) {
+      return "@" + ownName + rawExtensionBzlFile.substring(1);
+    } else if (rawExtensionBzlFile.startsWith("//")) {
+      return "@" + ownName + rawExtensionBzlFile;
+    } else {
+      return rawExtensionBzlFile;
+    }
+  }
+
+  class ModuleExtensionUsageBuilder {
     private final String extensionBzlFile;
     private final String extensionName;
     private final Location location;
     private final HashBiMap<String, String> imports;
+    private final ImmutableSet.Builder<String> devImports;
     private final ImmutableList.Builder<Tag> tags;
 
-    ModuleExtensionProxy(String extensionBzlFile, String extensionName, Location location) {
+    ModuleExtensionUsageBuilder(String extensionBzlFile, String extensionName, Location location) {
       this.extensionBzlFile = extensionBzlFile;
       this.extensionName = extensionName;
       this.location = location;
       this.imports = HashBiMap.create();
+      this.devImports = ImmutableSet.builder();
       this.tags = ImmutableList.builder();
     }
 
@@ -416,56 +502,80 @@ public class ModuleFileGlobals {
       return ModuleExtensionUsage.builder()
           .setExtensionBzlFile(extensionBzlFile)
           .setExtensionName(extensionName)
+          .setUsingModule(module.getKey())
           .setLocation(location)
           .setImports(ImmutableBiMap.copyOf(imports))
+          .setDevImports(devImports.build())
           .setTags(tags.build())
           .build();
     }
 
-    void addImport(String localRepoName, String exportedName, Location location)
-        throws EvalException {
-      RepositoryName.validateUserProvidedRepoName(localRepoName);
-      RepositoryName.validateUserProvidedRepoName(exportedName);
-      addRepoNameUsage(localRepoName, "by a use_repo() call", location);
-      if (imports.containsValue(exportedName)) {
-        String collisionRepoName = imports.inverse().get(exportedName);
-        throw Starlark.errorf(
-            "The repo exported as '%s' by module extension '%s' is already imported at %s",
-            exportedName, extensionName, repoNameUsages.get(collisionRepoName).getWhere());
+    /**
+     * Creates a proxy with the specified dev_dependency bit that shares accumulated imports and
+     * tags with all other such proxies, thus preserving their order across dev/non-dev deps.
+     */
+    ModuleExtensionProxy getProxy(boolean devDependency) {
+      return new ModuleExtensionProxy(devDependency);
+    }
+
+    @StarlarkBuiltin(name = "module_extension_proxy", documented = false)
+    class ModuleExtensionProxy implements Structure {
+
+      private final boolean devDependency;
+
+      private ModuleExtensionProxy(boolean devDependency) {
+        this.devDependency = devDependency;
       }
-      imports.put(localRepoName, exportedName);
-    }
 
-    @Nullable
-    @Override
-    public Object getValue(String tagName) throws EvalException {
-      return new StarlarkValue() {
-        @StarlarkMethod(
-            name = "call",
-            selfCall = true,
-            documented = false,
-            extraKeywords = @Param(name = "kwargs"),
-            useStarlarkThread = true)
-        public void call(Dict<String, Object> kwargs, StarlarkThread thread) {
-          tags.add(
-              Tag.builder()
-                  .setTagName(tagName)
-                  .setAttributeValues(kwargs)
-                  .setLocation(thread.getCallerLocation())
-                  .build());
+      void addImport(String localRepoName, String exportedName, Location location)
+          throws EvalException {
+        RepositoryName.validateUserProvidedRepoName(localRepoName);
+        RepositoryName.validateUserProvidedRepoName(exportedName);
+        addRepoNameUsage(localRepoName, "by a use_repo() call", location);
+        if (imports.containsValue(exportedName)) {
+          String collisionRepoName = imports.inverse().get(exportedName);
+          throw Starlark.errorf(
+              "The repo exported as '%s' by module extension '%s' is already imported at %s",
+              exportedName, extensionName, repoNameUsages.get(collisionRepoName).getWhere());
         }
-      };
-    }
+        imports.put(localRepoName, exportedName);
+        if (devDependency) {
+          devImports.add(exportedName);
+        }
+      }
 
-    @Override
-    public ImmutableCollection<String> getFieldNames() {
-      return ImmutableList.of();
-    }
+      @Nullable
+      @Override
+      public Object getValue(String tagName) throws EvalException {
+        return new StarlarkValue() {
+          @StarlarkMethod(
+              name = "call",
+              selfCall = true,
+              documented = false,
+              extraKeywords = @Param(name = "kwargs"),
+              useStarlarkThread = true)
+          public void call(Dict<String, Object> kwargs, StarlarkThread thread) {
+            tags.add(
+                Tag.builder()
+                    .setTagName(tagName)
+                    .setAttributeValues(AttributeValues.create(kwargs))
+                    .setDevDependency(devDependency)
+                    .setLocation(thread.getCallerLocation())
+                    .build());
+          }
+        };
+      }
 
-    @Nullable
-    @Override
-    public String getErrorMessageForUnknownField(String field) {
-      return null;
+      @Override
+      public ImmutableCollection<String> getFieldNames() {
+        return ImmutableList.of();
+      }
+
+      @Nullable
+      @Override
+      public String getErrorMessageForUnknownField(String field) {
+        return null;
+      }
     }
   }
 
@@ -495,6 +605,7 @@ public class ModuleFileGlobals {
       Dict<String, Object> kwargs,
       StarlarkThread thread)
       throws EvalException {
+    hadNonModuleCall = true;
     Location location = thread.getCallerLocation();
     for (String arg : Sequence.cast(args, String.class, "args")) {
       extensionProxy.addImport(arg, arg, location);
@@ -518,8 +629,8 @@ public class ModuleFileGlobals {
       doc =
           "Specifies that a dependency should still come from a registry, but its version should"
               + " be pinned, or its registry overridden, or a list of patches applied. This"
-              + " directive can only be used by the root module; in other words, if a module"
-              + " specifies any overrides, it cannot be used as a dependency by others.",
+              + " directive only takes effect in the root module; in other words, if a module"
+              + " is used as a dependency by others, its own overrides are ignored.",
       parameters = {
         @Param(
             name = "module_name",
@@ -577,6 +688,7 @@ public class ModuleFileGlobals {
       Iterable<?> patchCmds,
       StarlarkInt patchStrip)
       throws EvalException {
+    hadNonModuleCall = true;
     Version parsedVersion;
     try {
       parsedVersion = Version.parse(version);
@@ -597,9 +709,11 @@ public class ModuleFileGlobals {
       name = "multiple_version_override",
       doc =
           "Specifies that a dependency should still come from a registry, but multiple versions of"
-              + " it should be allowed to coexist. This directive can only be used by the root"
-              + " module; in other words, if a module specifies any overrides, it cannot be used"
-              + " as a dependency by others.",
+              + " it should be allowed to coexist. See <a"
+              + " href=\"/external/module#multiple-version_override\">the documentation</a> for"
+              + " more details. This"
+              + " directive only takes effect in the root module; in other words, if a module"
+              + " is used as a dependency by others, its own overrides are ignored.",
       parameters = {
         @Param(
             name = "module_name",
@@ -608,7 +722,6 @@ public class ModuleFileGlobals {
             positional = false),
         @Param(
             name = "versions",
-            // TODO(wyv): See X for more details
             doc =
                 "Explicitly specifies the versions allowed to coexist. These versions must already"
                     + " be present in the dependency graph pre-selection. Dependencies on this"
@@ -630,6 +743,7 @@ public class ModuleFileGlobals {
       })
   public void multipleVersionOverride(String moduleName, Iterable<?> versions, String registry)
       throws EvalException {
+    hadNonModuleCall = true;
     ImmutableList.Builder<Version> parsedVersionsBuilder = new ImmutableList.Builder<>();
     try {
       for (String version : Sequence.cast(versions, String.class, "versions").getImmutableList()) {
@@ -649,9 +763,9 @@ public class ModuleFileGlobals {
       name = "archive_override",
       doc =
           "Specifies that this dependency should come from an archive file (zip, gzip, etc) at a"
-              + " certain location, instead of from a registry. This directive can only be used by"
-              + " the root module; in other words, if a module specifies any overrides, it cannot"
-              + " be used as a dependency by others.",
+              + " certain location, instead of from a registry. This"
+              + " directive only takes effect in the root module; in other words, if a module"
+              + " is used as a dependency by others, its own overrides are ignored.",
       parameters = {
         @Param(
             name = "module_name",
@@ -713,6 +827,7 @@ public class ModuleFileGlobals {
       Iterable<?> patchCmds,
       StarlarkInt patchStrip)
       throws EvalException {
+    hadNonModuleCall = true;
     ImmutableList<String> urlList =
         urls instanceof String
             ? ImmutableList.of((String) urls)
@@ -732,8 +847,8 @@ public class ModuleFileGlobals {
       name = "git_override",
       doc =
           "Specifies that a dependency should come from a certain commit of a Git repository. This"
-              + " directive can only be used by the root module; in other words, if a module"
-              + " specifies any overrides, it cannot be used as a dependency by others.",
+              + " directive only takes effect in the root module; in other words, if a module"
+              + " is used as a dependency by others, its own overrides are ignored.",
       parameters = {
         @Param(
             name = "module_name",
@@ -784,6 +899,7 @@ public class ModuleFileGlobals {
       Iterable<?> patchCmds,
       StarlarkInt patchStrip)
       throws EvalException {
+    hadNonModuleCall = true;
     addOverride(
         moduleName,
         GitOverride.create(
@@ -798,8 +914,8 @@ public class ModuleFileGlobals {
       name = "local_path_override",
       doc =
           "Specifies that a dependency should come from a certain directory on local disk. This"
-              + " directive can only be used by the root module; in other words, if a module"
-              + " specifies any overrides, it cannot be used as a dependency by others.",
+              + " directive only takes effect in the root module; in other words, if a module"
+              + " is used as a dependency by others, its own overrides are ignored.",
       parameters = {
         @Param(
             name = "module_name",
@@ -813,16 +929,17 @@ public class ModuleFileGlobals {
             positional = false),
       })
   public void localPathOverride(String moduleName, String path) throws EvalException {
+    hadNonModuleCall = true;
     addOverride(moduleName, LocalPathOverride.create(path));
   }
 
-  public Module buildModule() {
+  public InterimModule buildModule() {
     return module
         .setDeps(ImmutableMap.copyOf(deps))
         .setOriginalDeps(ImmutableMap.copyOf(deps))
         .setExtensionUsages(
-            extensionProxies.stream()
-                .map(ModuleExtensionProxy::buildUsage)
+            extensionUsageBuilders.stream()
+                .map(ModuleExtensionUsageBuilder::buildUsage)
                 .collect(toImmutableList()))
         .build();
   }

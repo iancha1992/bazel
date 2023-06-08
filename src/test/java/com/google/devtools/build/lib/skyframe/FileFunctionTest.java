@@ -78,6 +78,7 @@ import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.lib.vfs.SyscallCache;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
+import com.google.devtools.build.skyframe.Differencer.DiffWithDelta.Delta;
 import com.google.devtools.build.skyframe.ErrorInfo;
 import com.google.devtools.build.skyframe.ErrorInfoSubject;
 import com.google.devtools.build.skyframe.EvaluationContext;
@@ -114,7 +115,7 @@ public class FileFunctionTest {
   private static final EvaluationContext EVALUATION_OPTIONS =
       EvaluationContext.newBuilder()
           .setKeepGoing(false)
-          .setNumThreads(DEFAULT_THREAD_COUNT)
+          .setParallelism(DEFAULT_THREAD_COUNT)
           .setEventHandler(NullEventHandler.INSTANCE)
           .build();
 
@@ -1058,7 +1059,7 @@ public class FileFunctionTest {
     EvaluationContext evaluationContext =
         EvaluationContext.newBuilder()
             .setKeepGoing(true)
-            .setNumThreads(DEFAULT_THREAD_COUNT)
+            .setParallelism(DEFAULT_THREAD_COUNT)
             .setEventHandler(eventHandler)
             .build();
     EvaluationResult<FileValue> result = evaluator.evaluate(keys, evaluationContext);
@@ -1208,7 +1209,7 @@ public class FileFunctionTest {
     EvaluationContext evaluationContext =
         EvaluationContext.newBuilder()
             .setKeepGoing(true)
-            .setNumThreads(DEFAULT_THREAD_COUNT)
+            .setParallelism(DEFAULT_THREAD_COUNT)
             .setEventHandler(eventHandler)
             .build();
     EvaluationResult<FileValue> result = evaluator.evaluate(keys, evaluationContext);
@@ -1271,7 +1272,7 @@ public class FileFunctionTest {
     EvaluationContext evaluationContext =
         EvaluationContext.newBuilder()
             .setKeepGoing(true)
-            .setNumThreads(DEFAULT_THREAD_COUNT)
+            .setParallelism(DEFAULT_THREAD_COUNT)
             .setEventHandler(eventHandler)
             .build();
     EvaluationResult<FileValue> result =
@@ -1302,7 +1303,7 @@ public class FileFunctionTest {
     EvaluationContext evaluationContext =
         EvaluationContext.newBuilder()
             .setKeepGoing(true)
-            .setNumThreads(DEFAULT_THREAD_COUNT)
+            .setParallelism(DEFAULT_THREAD_COUNT)
             .setEventHandler(eventHandler)
             .build();
     EvaluationResult<FileValue> result =
@@ -1330,7 +1331,7 @@ public class FileFunctionTest {
     EvaluationContext evaluationContext =
         EvaluationContext.newBuilder()
             .setKeepGoing(true)
-            .setNumThreads(1)
+            .setParallelism(1)
             .setEventHandler(NullEventHandler.INSTANCE)
             .build();
     EvaluationResult<FileValue> result =
@@ -1345,10 +1346,11 @@ public class FileFunctionTest {
     fs.stubbedStatErrors.remove(foo.asFragment());
     differencer.inject(
         fileStateSkyKey("foo"),
-        FileStateValue.create(
-            RootedPath.toRootedPath(pkgRoot, foo),
-            SyscallCache.NO_CACHE,
-            new TimestampGranularityMonitor(BlazeClock.instance())));
+        Delta.justNew(
+            FileStateValue.create(
+                RootedPath.toRootedPath(pkgRoot, foo),
+                SyscallCache.NO_CACHE,
+                new TimestampGranularityMonitor(BlazeClock.instance()))));
     result = evaluator.evaluate(ImmutableList.of(fooKey), evaluationContext);
     assertThatEvaluationResult(result).hasNoError();
     assertThat(result.get(fooKey).exists()).isTrue();

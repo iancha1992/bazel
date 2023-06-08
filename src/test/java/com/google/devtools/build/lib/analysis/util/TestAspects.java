@@ -17,7 +17,6 @@ import static com.google.devtools.build.lib.packages.Attribute.attr;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
 import static com.google.devtools.build.lib.packages.Type.STRING;
-import static com.google.devtools.build.lib.packages.Type.STRING_LIST;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.base.Function;
@@ -48,7 +47,6 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.AspectDefinition;
 import com.google.devtools.build.lib.packages.AspectParameters;
 import com.google.devtools.build.lib.packages.Attribute.AllowedValueSet;
-import com.google.devtools.build.lib.packages.Attribute.ComputedDefault;
 import com.google.devtools.build.lib.packages.Attribute.LabelListLateBoundDefault;
 import com.google.devtools.build.lib.packages.AttributeMap;
 import com.google.devtools.build.lib.packages.BuildType;
@@ -353,7 +351,7 @@ public class TestAspects {
     EXTRA_ATTRIBUTE_ASPECT_REQUIRING_PROVIDER = new ExtraAttributeAspectRequiringProvider();
   private static final AspectDefinition EXTRA_ATTRIBUTE_ASPECT_REQUIRING_PROVIDER_DEFINITION =
       new AspectDefinition.Builder(EXTRA_ATTRIBUTE_ASPECT_REQUIRING_PROVIDER)
-          .add(attr("$dep", LABEL).value(Label.parseAbsoluteUnchecked("//extra:extra")))
+          .add(attr("$dep", LABEL).value(Label.parseCanonicalUnchecked("//extra:extra")))
           .requireProviders(RequiredProvider.class)
           .build();
 
@@ -378,7 +376,7 @@ public class TestAspects {
         String depLabel,
         boolean applyToFiles,
         Class<? extends TransitiveInfoProvider>... requiredAspectProviders) {
-      this.depLabel = Label.parseAbsoluteUnchecked(depLabel);
+      this.depLabel = Label.parseCanonicalUnchecked(depLabel);
       this.applyToFiles = applyToFiles;
       this.requiredAspectProviders = requiredAspectProviders;
     }
@@ -436,24 +434,14 @@ public class TestAspects {
       new AspectDefinition.Builder(PACKAGE_GROUP_ATTRIBUTE_ASPECT)
           .add(
               attr("$dep", LABEL)
-                  .value(Label.parseAbsoluteUnchecked("//extra:extra"))
+                  .value(Label.parseCanonicalUnchecked("//extra:extra"))
                   .mandatoryProviders(ImmutableList.of(PackageGroupConfiguredTarget.PROVIDER.id())))
           .build();
 
   public static final ComputedAttributeAspect COMPUTED_ATTRIBUTE_ASPECT =
       new ComputedAttributeAspect();
   private static final AspectDefinition COMPUTED_ATTRIBUTE_ASPECT_DEFINITION =
-      new AspectDefinition.Builder(COMPUTED_ATTRIBUTE_ASPECT)
-          .add(
-              attr("$default_copts", STRING_LIST)
-                  .value(
-                      new ComputedDefault() {
-                        @Override
-                        public Object getDefault(AttributeMap rule) {
-                          return rule.getPackageDefaultCopts();
-                        }
-                      }))
-          .build();
+      new AspectDefinition.Builder(COMPUTED_ATTRIBUTE_ASPECT).build();
 
   /** An aspect that defines its own computed default attribute. */
   public static class ComputedAttributeAspect extends BaseAspect {
@@ -502,7 +490,7 @@ public class TestAspects {
           .add(
               attr("$tool", BuildType.LABEL)
                   .allowedFileTypes(FileTypeSet.ANY_FILE)
-                  .value(Label.parseAbsoluteUnchecked("//a:tool")))
+                  .value(Label.parseCanonicalUnchecked("//a:tool")))
           .build();
 
   /**
@@ -985,7 +973,7 @@ public class TestAspects {
               .factory(DummyRuleFactory.class)
               .define(
                   "implicit_dep",
-                  attr("$dep", LABEL).value(Label.parseAbsoluteUnchecked("//extra:extra")));
+                  attr("$dep", LABEL).value(Label.parseCanonicalUnchecked("//extra:extra")));
 
   // TODO(b/65746853): provide a way to do this without passing the entire configuration
   private static final LabelListLateBoundDefault<?> PLUGINS_LABEL_LIST =

@@ -41,6 +41,7 @@ gen_workspace_stanza(
     out = "rules_proto_stanza.txt",
     repos = [
         "rules_proto",
+        "rules_python",
     ],
 )
 
@@ -244,16 +245,6 @@ sh_test(
     ],
     tags = ["no_windows"],
     toolchains = ["@bazel_tools//tools/jdk:current_java_runtime"],
-)
-
-sh_test(
-    name = "output_filter_test",
-    size = "large",
-    srcs = ["output_filter_test.sh"],
-    data = [
-        ":test-deps",
-        "@bazel_tools//tools/bash/runfiles",
-    ],
 )
 
 sh_test(
@@ -607,7 +598,7 @@ sh_test(
 
 sh_test(
     name = "client_test",
-    size = "medium",
+    size = "large",
     srcs = ["client_test.sh"],
     data = [":test-deps"],
     tags = ["no_windows"],
@@ -615,6 +606,7 @@ sh_test(
 
 sh_test(
     name = "test_test",
+    size = "large",
     srcs = ["test_test.sh"],
     data = [
         ":test-deps",

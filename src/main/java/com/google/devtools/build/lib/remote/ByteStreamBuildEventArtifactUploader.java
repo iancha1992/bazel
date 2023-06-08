@@ -22,6 +22,7 @@ import build.bazel.remote.execution.v2.Digest;
 import build.bazel.remote.execution.v2.RequestMetadata;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.common.eventbus.Subscribe;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -47,7 +48,6 @@ import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -63,6 +63,8 @@ import javax.annotation.Nullable;
 class ByteStreamBuildEventArtifactUploader extends AbstractReferenceCounted
     implements BuildEventArtifactUploader {
   private static final Pattern TEST_LOG_PATTERN = Pattern.compile(".*/bazel-out/[^/]*/testlogs/.*");
+  private static final Pattern BUILD_LOG_PATTERN =
+      Pattern.compile(".*/bazel-out/_tmp/actions/std(err|out)-.*");
 
   private final Executor executor;
   private final ExtendedEventHandler reporter;
@@ -105,10 +107,16 @@ class ByteStreamBuildEventArtifactUploader extends AbstractReferenceCounted
   }
 
   public void omitFile(Path file) {
+    Preconditions.checkState(
+        remoteBuildEventUploadMode != RemoteBuildEventUploadMode.MINIMAL,
+        "Cannot omit file in MINIMAL mode");
     omittedFiles.add(file.asFragment());
   }
 
   public void omitTree(Path treeRoot) {
+    Preconditions.checkState(
+        remoteBuildEventUploadMode != RemoteBuildEventUploadMode.MINIMAL,
+        "Cannot omit tree in MINIMAL mode");
     omittedTreeRoots.add(treeRoot.asFragment());
   }
 
@@ -207,23 +215,20 @@ class ByteStreamBuildEventArtifactUploader extends AbstractReferenceCounted
     }
   }
 
-  private boolean shouldQuery(PathMetadata path) {
-    return path.getDigest() != null && !path.isRemote() && !path.isDirectory();
-  }
-
   private boolean shouldUpload(PathMetadata path) {
     boolean result =
         path.getDigest() != null && !path.isRemote() && !path.isDirectory() && !path.isOmitted();
 
     if (remoteBuildEventUploadMode == RemoteBuildEventUploadMode.MINIMAL) {
-      result = result && (isTestLog(path) || isProfile(path));
+      result = result && (isLog(path) || isProfile(path));
     }
 
     return result;
   }
 
-  private boolean isTestLog(PathMetadata path) {
-    return TEST_LOG_PATTERN.matcher(path.getPath().getPathString()).matches();
+  private boolean isLog(PathMetadata path) {
+    return TEST_LOG_PATTERN.matcher(path.getPath().getPathString()).matches()
+        || BUILD_LOG_PATTERN.matcher(path.getPath().getPathString()).matches();
   }
 
   private boolean isProfile(PathMetadata path) {
@@ -236,7 +241,8 @@ class ByteStreamBuildEventArtifactUploader extends AbstractReferenceCounted
     List<PathMetadata> filesToQuery = new ArrayList<>();
     Set<Digest> digestsToQuery = new HashSet<>();
     for (PathMetadata path : paths) {
-      if (shouldQuery(path)) {
+      // Query remote cache for files even if omitted from uploading
+      if (shouldUpload(path) || path.isOmitted()) {
         filesToQuery.add(path);
         digestsToQuery.add(path.getDigest());
       } else {
@@ -250,7 +256,7 @@ class ByteStreamBuildEventArtifactUploader extends AbstractReferenceCounted
     return toSingle(() -> remoteCache.findMissingDigests(context, digestsToQuery), executor)
         .onErrorResumeNext(
             error -> {
-              reporterUploadError(error);
+              reportUploadError(error, null, null);
               // Assuming all digests are missing if failed to query
               return Single.just(ImmutableSet.copyOf(digestsToQuery));
             })
@@ -261,13 +267,19 @@ class ByteStreamBuildEventArtifactUploader extends AbstractReferenceCounted
             });
   }
 
-  private void reporterUploadError(Throwable error) {
+  private void reportUploadError(Throwable error, Path path, Digest digest) {
     if (error instanceof CancellationException) {
       return;
     }
 
-    String errorMessage =
-        "Uploading BEP referenced local files: " + grpcAwareErrorMessage(error, verboseFailures);
+    String errorMessage = "Uploading BEP referenced local file";
+    if (path != null) {
+      errorMessage += " " + path;
+    }
+    if (digest != null) {
+      errorMessage += " " + digest;
+    }
+    errorMessage += ": " + grpcAwareErrorMessage(error, verboseFailures);
 
     reporter.handle(Event.warn(errorMessage));
   }
@@ -292,11 +304,11 @@ class ByteStreamBuildEventArtifactUploader extends AbstractReferenceCounted
                               path.isDirectory(),
                               // set remote to true so the PathConverter will use bytestream://
                               // scheme to convert the URI for this file
-                              /*remote=*/ true,
+                              /* remote= */ true,
                               path.isOmitted()))
                   .onErrorResumeNext(
                       error -> {
-                        reporterUploadError(error);
+                        reportUploadError(error, path.getPath(), path.getDigest());
                         return Single.just(path);
                       });
             })
@@ -323,19 +335,22 @@ class ByteStreamBuildEventArtifactUploader extends AbstractReferenceCounted
                       try {
                         return readPathMetadata(file);
                       } catch (IOException e) {
-                        reporterUploadError(e);
+                        reportUploadError(e, file, null);
                         return new PathMetadata(
                             file,
-                            /*digest=*/ null,
-                            /*directory=*/ false,
-                            /*remote=*/ false,
-                            /*omitted=*/ false);
+                            /* digest= */ null,
+                            /* directory= */ false,
+                            /* remote= */ false,
+                            /* omitted= */ false);
                       }
                     })
                 .collect(Collectors.toList())
                 .flatMap(paths -> queryRemoteCache(remoteCache, context, paths))
                 .flatMap(paths -> uploadLocalFiles(remoteCache, context, paths))
-                .map(paths -> new PathConverterImpl(remoteServerInstanceName, paths)),
+                .map(
+                    paths ->
+                        new PathConverterImpl(
+                            remoteServerInstanceName, paths, remoteBuildEventUploadMode)),
         RemoteCache::release);
   }
 
@@ -374,17 +389,23 @@ class ByteStreamBuildEventArtifactUploader extends AbstractReferenceCounted
     private final Set<Path> skippedPaths;
     private final Set<Path> localPaths;
 
-    PathConverterImpl(String remoteServerInstanceName, List<PathMetadata> uploads) {
+    PathConverterImpl(
+        String remoteServerInstanceName,
+        List<PathMetadata> uploads,
+        RemoteBuildEventUploadMode remoteBuildEventUploadMode) {
       Preconditions.checkNotNull(uploads);
       this.remoteServerInstanceName = remoteServerInstanceName;
-      pathToDigest = new HashMap<>(uploads.size());
+      pathToDigest = Maps.newHashMapWithExpectedSize(uploads.size());
       ImmutableSet.Builder<Path> skippedPaths = ImmutableSet.builder();
       ImmutableSet.Builder<Path> localPaths = ImmutableSet.builder();
       for (PathMetadata pair : uploads) {
         Path path = pair.getPath();
         Digest digest = pair.getDigest();
         if (digest != null) {
-          if (pair.isRemote()) {
+          // Always use bytestream:// in MINIMAL mode
+          if (remoteBuildEventUploadMode == RemoteBuildEventUploadMode.MINIMAL) {
+            pathToDigest.put(path, digest);
+          } else if (pair.isRemote()) {
             pathToDigest.put(path, digest);
           } else {
             localPaths.add(path);

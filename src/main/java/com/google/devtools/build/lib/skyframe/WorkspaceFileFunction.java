@@ -23,7 +23,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Sets;
+import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.FileValue;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -60,7 +60,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.Module;
 import net.starlark.java.eval.Mutability;
@@ -120,14 +119,14 @@ public class WorkspaceFileFunction implements SkyFunction {
             RepositoryDelegatorFunction.RESOLVED_FILE_INSTEAD_OF_WORKSPACE.get(env));
     boolean useWorkspaceResolvedFile = resolvedFile.isPresent();
 
+    final boolean bzlmod = starlarkSemantics.getBool(BuildLanguageOptions.ENABLE_BZLMOD);
     boolean useWorkspaceBzlmodFile = false;
     RootedPath workspaceBzlmodFile =
         RootedPath.toRootedPath(
             workspaceFile.getRoot(),
             workspaceFile.getRootRelativePath().replaceName("WORKSPACE.bzlmod"));
     // We only need to check WORKSPACE.bzlmod when the resolved file isn't used.
-    if (!useWorkspaceResolvedFile
-        && starlarkSemantics.getBool(BuildLanguageOptions.ENABLE_BZLMOD)) {
+    if (!useWorkspaceResolvedFile && bzlmod) {
       FileValue workspaceBzlmodFileValue =
           (FileValue) env.getValue(FileValue.key(workspaceBzlmodFile));
       if (workspaceBzlmodFileValue == null) {
@@ -266,20 +265,30 @@ public class WorkspaceFileFunction implements SkyFunction {
                   .getRepositoryMapping()
                   .getOrDefault(RepositoryName.MAIN, ImmutableMap.of()));
     }
+    if (bzlmod) {
+      RepositoryMappingValue rootModuleMapping =
+          (RepositoryMappingValue)
+              env.getValue(RepositoryMappingValue.KEY_FOR_ROOT_MODULE_WITHOUT_WORKSPACE_REPOS);
+      if (rootModuleMapping == null) {
+        return null;
+      }
+      repoMapping = repoMapping.composeWith(rootModuleMapping.getRepositoryMapping());
+    }
 
     Package.Builder builder =
         packageFactory.newExternalPackageBuilder(
             workspaceFile, ruleClassProvider.getRunfilesPrefix(), repoMapping, starlarkSemantics);
 
     if (chunks.isEmpty()) {
+      builder.setLoads(ImmutableList.of());
       return new WorkspaceFileValue(
           buildAndReportEvents(builder, env),
-          /* loadedModules = */ ImmutableMap.<String, Module>of(),
-          /* loadToChunkMap = */ ImmutableMap.<String, Integer>of(),
-          /* bindings = */ ImmutableMap.<String, Object>of(),
+          /* loadedModules= */ ImmutableMap.of(),
+          /* loadToChunkMap= */ ImmutableMap.of(),
+          /* bindings= */ ImmutableMap.of(),
           workspaceFile,
-          /* idx = */ 0, // first fragment
-          /* hasNext = */ false);
+          /* idx= */ 0, // first fragment
+          /* hasNext= */ false);
     }
 
     List<StarlarkFile> chunk = chunks.get(key.getIndex());
@@ -288,7 +297,8 @@ public class WorkspaceFileFunction implements SkyFunction {
     ImmutableList<Pair<String, Location>> programLoads =
         BzlLoadFunction.getLoadsFromStarlarkFiles(chunk);
     ImmutableList<Label> loadLabels =
-        BzlLoadFunction.getLoadLabels(env.getListener(), programLoads, rootPackage, repoMapping);
+        BzlLoadFunction.getLoadLabels(
+            env.getListener(), programLoads, rootPackage, repoMapping, starlarkSemantics);
     if (loadLabels == null) {
       NoSuchPackageException e =
           PackageFunction.PackageFunctionException.builder()
@@ -324,7 +334,8 @@ public class WorkspaceFileFunction implements SkyFunction {
               programLoads,
               keys.build(),
               starlarkSemantics,
-              bzlLoadFunctionForInlining);
+              bzlLoadFunctionForInlining,
+              /* checkVisibility= */ true);
     } catch (NoSuchPackageException e) {
       throw new WorkspaceFileFunctionException(e, Transience.PERSISTENT);
     }
@@ -339,28 +350,24 @@ public class WorkspaceFileFunction implements SkyFunction {
           new WorkspaceFactory(
               builder,
               ruleClassProvider,
-              packageFactory.getEnvironmentExtensions(),
               mu,
               key.getIndex() == 0,
               directories.getEmbeddedBinariesRoot(),
               directories.getWorkspace(),
               directories.getLocalJavabase(),
               starlarkSemantics);
-      Set<Label> starlarkFileDependencies;
       if (prevValue != null) {
-        starlarkFileDependencies =
-            Sets.newLinkedHashSet(prevValue.getPackage().getStarlarkFileDependencies());
         try {
           parser.setParent(
               prevValue.getPackage(), prevValue.getLoadedModules(), prevValue.getBindings());
         } catch (NameConflictException e) {
           throw new WorkspaceFileFunctionException(e, Transience.PERSISTENT);
         }
+        builder.setLoads(
+            Iterables.concat(prevValue.getLoadedModules().values(), loadedModules.values()));
       } else {
-        starlarkFileDependencies = Sets.newLinkedHashSet();
+        builder.setLoads(loadedModules.values());
       }
-      PackageFactory.transitiveClosureOfLabelsRec(starlarkFileDependencies, loadedModules);
-      builder.setStarlarkFileDependencies(ImmutableList.copyOf(starlarkFileDependencies));
       // Execute the partial files that comprise this chunk.
       for (StarlarkFile partialFile : chunk) {
         parser.execute(partialFile, loadedModules, key);
@@ -451,7 +458,7 @@ public class WorkspaceFileFunction implements SkyFunction {
    */
   private static ImmutableMap<String, Integer> createLoadToChunkMap(
       WorkspaceFileValue prevValue, WorkspaceFactory parser, WorkspaceFileKey key) {
-    ImmutableMap.Builder<String, Integer> builder = new ImmutableMap.Builder<String, Integer>();
+    ImmutableMap.Builder<String, Integer> builder = new ImmutableMap.Builder<>();
     if (prevValue == null) {
       for (String loadString : parser.getLoadedModules().keySet()) {
         builder.put(loadString, key.getIndex());

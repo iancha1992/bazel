@@ -24,7 +24,7 @@ import com.google.common.collect.Interner;
 import com.google.devtools.build.lib.actions.ActionEnvironment;
 import com.google.devtools.build.lib.actions.ArtifactRoot;
 import com.google.devtools.build.lib.actions.BuildConfigurationEvent;
-import com.google.devtools.build.lib.actions.CommandLines.CommandLineLimits;
+import com.google.devtools.build.lib.actions.CommandLineLimits;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.PlatformOptions;
 import com.google.devtools.build.lib.analysis.config.OutputDirectories.InvalidMnemonicException;
@@ -66,10 +66,10 @@ import net.starlark.java.eval.StarlarkThread;
  *
  * <p>A single build may require building tools to run on a variety of platforms: when compiling a
  * server application for production, we must build the build tools (like compilers) to run on the
- * host platform, but cross-compile the application for the production environment.
+ * execution platform, but cross-compile the application for the production environment.
  *
  * <p>There is always at least one {@code BuildConfigurationValue} instance in any build: the one
- * representing the host platform. Additional instances may be created, in a cross-compilation
+ * representing the target platform. Additional instances may be created, in a cross-compilation
  * build, for example.
  *
  * <p>Instances of {@code BuildConfigurationValue} are canonical:
@@ -77,7 +77,8 @@ import net.starlark.java.eval.StarlarkThread;
  * <pre>{@code c1.equals(c2) <=> c1==c2.}</pre>
  */
 @AutoCodec
-public class BuildConfigurationValue implements BuildConfigurationApi, SkyValue {
+public class BuildConfigurationValue
+    implements BuildConfigurationApi, SkyValue, BuildConfigurationInfo {
 
   private static final Interner<ImmutableSortedMap<Class<? extends Fragment>, Fragment>>
       fragmentsInterner = BlazeInterners.newWeakInterner();
@@ -129,6 +130,8 @@ public class BuildConfigurationValue implements BuildConfigurationApi, SkyValue 
   private final Supplier<BuildConfigurationEvent> buildEventSupplier;
 
   private final boolean siblingRepositoryLayout;
+
+  private final FeatureSet defaultFeatures;
 
   /**
    * Validates the options for this BuildConfigurationValue. Issues warnings for the use of
@@ -261,6 +264,7 @@ public class BuildConfigurationValue implements BuildConfigurationApi, SkyValue 
     this.reservedActionMnemonics = reservedActionMnemonics;
     this.buildEventSupplier = Suppliers.memoize(this::createBuildEvent);
     this.commandLineLimits = new CommandLineLimits(options.minParamFileSize);
+    this.defaultFeatures = FeatureSet.parse(options.defaultFeatures);
   }
 
   @Override
@@ -454,23 +458,21 @@ public class BuildConfigurationValue implements BuildConfigurationApi, SkyValue 
     return mainRepositoryName.getName();
   }
 
-  /**
-   * Returns the configuration-dependent string for this configuration.
-   *
-   * <p>This is also the name of the configuration's base output directory unless {@link
-   * #isHostConfiguration} is {@code true}, in which case the output directory is named {@code
-   * "host"}. See also {@link #getOutputDirectoryName}.
-   */
+  @Override
   public String getMnemonic() {
     return outputDirectories.getMnemonic();
+  }
+
+  /** Returns whether to use automatic exec groups. */
+  public boolean useAutoExecGroups() {
+    return options.useAutoExecGroups;
   }
 
   /**
    * Returns the name of the base output directory under which actions in this configuration write
    * their outputs.
    *
-   * <p>This is the same as {@link #getMnemonic} except in the host configuration, in which case it
-   * is {@code "host"}.
+   * <p>This is the same as {@link #getMnemonic}.
    */
   public String getOutputDirectoryName() {
     return outputDirectories.getOutputDirName();
@@ -682,6 +684,7 @@ public class BuildConfigurationValue implements BuildConfigurationApi, SkyValue 
     return testEnv;
   }
 
+  @Override
   public CommandLineLimits getCommandLineLimits() {
     return commandLineLimits;
   }
@@ -695,19 +698,14 @@ public class BuildConfigurationValue implements BuildConfigurationApi, SkyValue 
     return options.runUnder;
   }
 
-  /** Returns true if this is a host configuration. */
-  public boolean isHostConfiguration() {
-    return options.isHost;
-  }
-
   /** Returns true if this is an execution configuration. */
   public boolean isExecConfiguration() {
     return options.isExec;
   }
 
-  /** Returns true if this is an tool-related configuration. */
+  @Override
   public boolean isToolConfiguration() {
-    return isExecConfiguration() || isHostConfiguration();
+    return isExecConfiguration();
   }
 
   @Override
@@ -772,9 +770,18 @@ public class BuildConfigurationValue implements BuildConfigurationApi, SkyValue 
     return options.compilationMode;
   }
 
-  /** Returns the cache key of the build options used to create this configuration. */
+  @Override
   public String checksum() {
     return buildOptions.checksum();
+  }
+
+  /**
+   * Returns a user-friendly short configuration identifier.
+   *
+   * <p>See {@link BuildOptions#shortId()} for details.
+   */
+  public String shortId() {
+    return buildOptions.shortId();
   }
 
   /** Returns a copy of the build configuration options for this configuration. */
@@ -858,9 +865,9 @@ public class BuildConfigurationValue implements BuildConfigurationApi, SkyValue 
     options.executionInfoModifier.apply(mnemonic, executionInfo);
   }
 
-  /** @return the list of default features used for all packages. */
-  public List<String> getDefaultFeatures() {
-    return options.defaultFeatures;
+  /** Returns the list of default features used for all packages. */
+  public FeatureSet getDefaultFeatures() {
+    return defaultFeatures;
   }
 
   /**
@@ -892,6 +899,7 @@ public class BuildConfigurationValue implements BuildConfigurationApi, SkyValue 
     return BuildEventIdUtil.configurationId(checksum());
   }
 
+  @Override
   public BuildConfigurationEvent toBuildEvent() {
     return buildEventSupplier.get();
   }
@@ -911,6 +919,14 @@ public class BuildConfigurationValue implements BuildConfigurationApi, SkyValue 
                 .setIsTool(isToolConfiguration())
                 .build());
     return new BuildConfigurationEvent(eventId, builder.build());
+  }
+
+  public static BuildEventId.ConfigurationId configurationIdMessage(
+      @Nullable BuildConfigurationValue configuration) {
+    if (configuration == null) {
+      return BuildEventIdUtil.nullConfigurationIdMessage();
+    }
+    return BuildEventIdUtil.configurationIdMessage(configuration.checksum());
   }
 
   public ImmutableSet<String> getReservedActionMnemonics() {

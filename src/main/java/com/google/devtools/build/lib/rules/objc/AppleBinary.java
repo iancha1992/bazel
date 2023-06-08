@@ -28,7 +28,6 @@ import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
-import com.google.devtools.build.lib.rules.apple.AppleCommandLineOptions.AppleBitcodeMode;
 import com.google.devtools.build.lib.rules.cpp.CcInfo;
 import com.google.devtools.build.lib.rules.cpp.CppConfiguration;
 import com.google.devtools.build.lib.rules.cpp.CppSemantics;
@@ -128,8 +127,7 @@ public class AppleBinary {
       BuildConfigurationValue childConfig = dependencySpecificConfiguration.config();
       CppConfiguration childCppConfig = childConfig.getFragment(CppConfiguration.class);
       IntermediateArtifacts intermediateArtifacts =
-          new IntermediateArtifacts(
-              ruleContext, /*archiveFileNameSuffix*/ "", /*outputPrefix*/ "", childConfig);
+          new IntermediateArtifacts(ruleContext, childConfig);
 
       List<? extends TransitiveInfoCollection> propagatedDeps =
           MultiArchBinarySupport.getProvidersFromCtads(splitDeps.get(splitTransitionKey));
@@ -149,12 +147,6 @@ public class AppleBinary {
               .setTargetTriplet(childTriplet)
               .setBinary(binaryArtifact);
 
-      if (childCppConfig.getAppleBitcodeMode() == AppleBitcodeMode.EMBEDDED) {
-        Artifact bitcodeSymbols = intermediateArtifacts.bitcodeSymbolMap();
-        outputBuilder.setBitcodeSymbols(bitcodeSymbols);
-        legacyDebugOutputsBuilder.addOutput(
-            childTriplet.architecture(), OutputType.BITCODE_SYMBOLS, bitcodeSymbols);
-      }
       if (childCppConfig.appleGenerateDsym()) {
         Artifact dsymBinary =
             childCppConfig.objcShouldStripBinary()

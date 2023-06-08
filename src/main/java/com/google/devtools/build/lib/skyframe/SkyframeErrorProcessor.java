@@ -308,9 +308,10 @@ public final class SkyframeErrorProcessor {
           label,
           individualErrorProcessingResult);
 
+      boolean isExecutionException = isExecutionException(cause);
       if (keepGoing) {
         aggregatingResultBuilder.aggregateSingleResult(individualErrorProcessingResult);
-        printWarningMessage(includeExecutionPhase, label, eventHandler);
+        printWarningMessage(isExecutionException, label, eventHandler);
       } else {
         noKeepGoingAnalysisExceptionAspect =
             throwOrReturnAspectAnalysisException(
@@ -318,8 +319,8 @@ public final class SkyframeErrorProcessor {
                 cause,
                 bugReporter,
                 errorKey,
-                includeExecutionPhase,
-                /*hasExecutionCycle=*/ CYCLE_CODE.equals(
+                isExecutionException,
+                /* hasExecutionCycle= */ CYCLE_CODE.equals(
                     individualErrorProcessingResult.executionDetailedExitCode()));
       }
     }
@@ -398,11 +399,11 @@ public final class SkyframeErrorProcessor {
       Exception cause,
       BugReporter bugReporter,
       SkyKey errorKey,
-      boolean includeExecutionPhase,
+      boolean isExecutionException,
       boolean hasExecutionCycle)
       throws BuildFailedException, TestExecException, ViewCreationFailedException {
     // If the error is execution-related: straightaway rethrow. No further steps required.
-    if (isExecutionException(cause)) {
+    if (isExecutionException) {
       rethrow(cause, bugReporter, result);
     }
     // If a --nokeep_going build found a cycle, that means there were no other errors thrown
@@ -422,11 +423,8 @@ public final class SkyframeErrorProcessor {
     }
 
     Label topLevelLabel = ((ConfiguredTargetKey) errorKey).getLabel();
-    String errorMsg =
-        includeExecutionPhase
-            ? String.format("Build of target '%s' failed; build aborted", topLevelLabel)
-            : String.format("Analysis of target '%s' failed; build aborted", topLevelLabel);
-    throw createViewCreationFailedException(cause, errorMsg);
+    throw createViewCreationFailedException(
+        cause, String.format("Analysis of target '%s' failed; build aborted", topLevelLabel));
   }
 
   /**
@@ -579,11 +577,11 @@ public final class SkyframeErrorProcessor {
   }
 
   private static void printWarningMessage(
-      boolean includeExecutionPhase,
+      boolean isExecutionException,
       @Nullable Label topLevelLabel,
       ExtendedEventHandler eventHandler) {
     String warningMsg =
-        includeExecutionPhase
+        isExecutionException
             ? String.format("errors encountered while building target '%s'", topLevelLabel)
             : String.format(
                 "errors encountered while analyzing target '%s': it will not be built",
@@ -609,11 +607,11 @@ public final class SkyframeErrorProcessor {
   /** Peel away the wrapper layers to get to the ActionLookupKey of the top level target. */
   private static SkyKey getEffectiveErrorKey(Entry<SkyKey, ErrorInfo> errorEntry) {
     if (errorEntry.getKey().argument() instanceof BuildDriverKey) {
-      return ((BuildDriverKey) errorEntry.getKey().argument()).getActionLookupKey();
+      return ((BuildDriverKey) errorEntry.getKey().argument()).getActionLookupKey().toKey();
     }
     // For exclusive tests.
     if (errorEntry.getKey().argument() instanceof TestCompletionKey) {
-      return ((TestCompletionKey) errorEntry.getKey().argument()).configuredTargetKey();
+      return ((TestCompletionKey) errorEntry.getKey().argument()).configuredTargetKey().toKey();
     }
     return errorEntry.getKey();
   }

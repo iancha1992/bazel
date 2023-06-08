@@ -27,6 +27,7 @@ import com.google.devtools.common.options.OptionEffectTag;
 import com.google.devtools.common.options.OptionMetadataTag;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParsingException;
+import java.time.Duration;
 import java.util.List;
 
 /** Command-line options for repositories. */
@@ -42,7 +43,8 @@ public class RepositoryOptions extends OptionsBase {
       help =
           "Specifies the cache location of the downloaded values obtained "
               + "during the fetching of external repositories. An empty string "
-              + "as argument requests the cache to be disabled.")
+              + "as argument requests the cache to be disabled, "
+              + "otherwise the default of '<output_user_root>/cache/repos/v1' is used")
   public PathFragment experimentalRepositoryCache;
 
   @Option(
@@ -84,12 +86,15 @@ public class RepositoryOptions extends OptionsBase {
   public boolean useHardlinks;
 
   @Option(
-      name = "experimental_repository_disable_download",
+      name = "repository_disable_download",
+      oldName = "experimental_repository_disable_download",
       defaultValue = "false",
       documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
-      help = "If set, downloading external repositories is not allowed.")
+      effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+      help =
+          "If set, downloading using ctx.download{,_and_extract} is not allowed during repository"
+              + " fetching. Note that network access is not completely disabled; ctx.execute could"
+              + " still run an arbitrary executable that accesses the Internet.")
   public boolean disableDownload;
 
   @Option(
@@ -125,13 +130,36 @@ public class RepositoryOptions extends OptionsBase {
   public double httpTimeoutScaling;
 
   @Option(
+      name = "http_connector_attempts",
+      defaultValue = "8",
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+      help = "The maximum number of attempts for http downloads.")
+  public int httpConnectorAttempts;
+
+  @Option(
+      name = "http_connector_retry_max_timeout",
+      defaultValue = "0s",
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+      help =
+          "The maximum timeout for http download retries. With a value of 0, no timeout maximum is"
+              + " defined.")
+  public Duration httpConnectorRetryMaxTimeout;
+
+  @Option(
       name = "override_repository",
       defaultValue = "null",
       allowMultiple = true,
       converter = RepositoryOverrideConverter.class,
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Overrides a repository with a local directory.")
+      help =
+          "Override a repository with a local path in the form of <repository name>=<path>. If the"
+              + " given path is an absolute path, it will be used as it is. If the given path is a"
+              + " relative path, it is relative to the current working directory. If the given path"
+              + " starts with '%workspace%, it is relative to the workspace root, which is the"
+              + " output of `bazel info workspace`")
   public List<RepositoryOverride> repositoryOverrides;
 
   @Option(
@@ -141,7 +169,12 @@ public class RepositoryOptions extends OptionsBase {
       converter = ModuleOverrideConverter.class,
       documentationCategory = OptionDocumentationCategory.BZLMOD,
       effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Overrides a module with a local directory.")
+      help =
+          "Override a module with a local path in the form of <module name>=<path>. If the given"
+              + " path is an absolute path, it will be used as it is. If the given path is a"
+              + " relative path, it is relative to the current working directory. If the given path"
+              + " starts with '%workspace%, it is relative to the workspace root, which is the"
+              + " output of `bazel info workspace`")
   public List<ModuleOverride> moduleOverrides;
 
   @Option(
@@ -265,6 +298,19 @@ public class RepositoryOptions extends OptionsBase {
               + " warning when mismatch detected.")
   public BazelCompatibilityMode bazelCompatibilityMode;
 
+  @Option(
+      name = "lockfile_mode",
+      defaultValue = "off", // TODO(salmasamy) later will be changed to 'update'
+      converter = LockfileMode.Converter.class,
+      documentationCategory = OptionDocumentationCategory.BZLMOD,
+      effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS},
+      help =
+          "Specifies how and whether or not to use the lockfile. Valid values are `update` to"
+              + " use the lockfile and update it if there are changes, `error` to use the lockfile"
+              + " but throw an error if it's not up-to-date, or `off` to neither read from or write"
+              + " to the lockfile.")
+  public LockfileMode lockfileMode;
+
   /** An enum for specifying different modes for checking direct dependency accuracy. */
   public enum CheckDirectDepsMode {
     OFF, // Don't check direct dependency accuracy.
@@ -278,6 +324,7 @@ public class RepositoryOptions extends OptionsBase {
       }
     }
   }
+
   /** An enum for specifying different modes for bazel compatibility check. */
   public enum BazelCompatibilityMode {
     ERROR, // Check and throw an error when mismatched.
@@ -288,6 +335,20 @@ public class RepositoryOptions extends OptionsBase {
     public static class Converter extends EnumConverter<BazelCompatibilityMode> {
       public Converter() {
         super(BazelCompatibilityMode.class, "Bazel compatibility check mode");
+      }
+    }
+  }
+
+  /** An enum for specifying how to use the lockfile. */
+  public enum LockfileMode {
+    OFF, // Don't use the lockfile at all.
+    UPDATE, // Update the lockfile when it mismatches the module.
+    ERROR; // Throw an error when it mismatches the module.
+
+    /** Converts to {@link BazelLockfileMode}. */
+    public static class Converter extends EnumConverter<LockfileMode> {
+      public Converter() {
+        super(LockfileMode.class, "Lockfile mode");
       }
     }
   }
@@ -305,17 +366,10 @@ public class RepositoryOptions extends OptionsBase {
         throw new OptionsParsingException(
             "Repository overrides must be of the form 'repository-name=path'", input);
       }
-      OptionsUtils.AbsolutePathFragmentConverter absolutePathFragmentConverter =
-          new OptionsUtils.AbsolutePathFragmentConverter();
-      PathFragment path;
+      OptionsUtils.PathFragmentConverter pathConverter = new OptionsUtils.PathFragmentConverter();
+      String pathString = pathConverter.convert(pieces[1]).getPathString();
       try {
-        path = absolutePathFragmentConverter.convert(pieces[1]);
-      } catch (OptionsParsingException e) {
-        throw new OptionsParsingException(
-            "Repository override directory must be an absolute path", input, e);
-      }
-      try {
-        return RepositoryOverride.create(RepositoryName.create(pieces[0]), path);
+        return RepositoryOverride.create(RepositoryName.create(pieces[0]), pathString);
       } catch (LabelSyntaxException e) {
         throw new OptionsParsingException("Invalid repository name given to override", input, e);
       }
@@ -347,15 +401,9 @@ public class RepositoryOptions extends OptionsBase {
                 pieces[0]));
       }
 
-      OptionsUtils.AbsolutePathFragmentConverter absolutePathFragmentConverter =
-          new OptionsUtils.AbsolutePathFragmentConverter();
-      try {
-        var unused = absolutePathFragmentConverter.convert(pieces[1]);
-      } catch (OptionsParsingException e) {
-        throw new OptionsParsingException(
-            "Module override directory must be an absolute path", input, e);
-      }
-      return ModuleOverride.create(pieces[0], pieces[1]);
+      OptionsUtils.PathFragmentConverter pathConverter = new OptionsUtils.PathFragmentConverter();
+      String pathString = pathConverter.convert(pieces[1]).getPathString();
+      return ModuleOverride.create(pieces[0], pathString);
     }
 
     @Override
@@ -368,13 +416,13 @@ public class RepositoryOptions extends OptionsBase {
   @AutoValue
   public abstract static class RepositoryOverride {
 
-    private static RepositoryOverride create(RepositoryName repositoryName, PathFragment path) {
+    private static RepositoryOverride create(RepositoryName repositoryName, String path) {
       return new AutoValue_RepositoryOptions_RepositoryOverride(repositoryName, path);
     }
 
     public abstract RepositoryName repositoryName();
 
-    public abstract PathFragment path();
+    public abstract String path();
   }
 
   /** A module override, represented by a name and an absolute path to a module. */

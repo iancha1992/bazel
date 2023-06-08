@@ -15,6 +15,7 @@
 
 package com.google.devtools.build.lib.bazel;
 
+import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
@@ -25,6 +26,16 @@ import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.authandtls.AuthAndTLSOptions;
+import com.google.devtools.build.lib.authandtls.GoogleAuthUtils;
+import com.google.devtools.build.lib.authandtls.StaticCredentials;
+import com.google.devtools.build.lib.authandtls.credentialhelper.CredentialHelperCredentials;
+import com.google.devtools.build.lib.authandtls.credentialhelper.CredentialHelperEnvironment;
+import com.google.devtools.build.lib.authandtls.credentialhelper.CredentialHelperProvider;
+import com.google.devtools.build.lib.authandtls.credentialhelper.CredentialModule;
+import com.google.devtools.build.lib.bazel.bzlmod.AttributeValues;
+import com.google.devtools.build.lib.bazel.bzlmod.BazelDepGraphFunction;
+import com.google.devtools.build.lib.bazel.bzlmod.BazelLockFileFunction;
 import com.google.devtools.build.lib.bazel.bzlmod.BazelModuleInspectorFunction;
 import com.google.devtools.build.lib.bazel.bzlmod.BazelModuleInspectorValue.AugmentedModule.ResolutionReason;
 import com.google.devtools.build.lib.bazel.bzlmod.BazelModuleResolutionFunction;
@@ -45,6 +56,7 @@ import com.google.devtools.build.lib.bazel.repository.LocalConfigPlatformRule;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.BazelCompatibilityMode;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.CheckDirectDepsMode;
+import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.LockfileMode;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.RepositoryOverride;
 import com.google.devtools.build.lib.bazel.repository.cache.RepositoryCache;
 import com.google.devtools.build.lib.bazel.repository.downloader.DelegatingDownloader;
@@ -106,6 +118,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
+import javax.annotation.Nullable;
 
 /** Adds support for fetching external code. */
 public class BazelRepositoryModule extends BlazeModule {
@@ -138,8 +151,11 @@ public class BazelRepositoryModule extends BlazeModule {
   private final AtomicBoolean ignoreDevDeps = new AtomicBoolean(false);
   private CheckDirectDepsMode checkDirectDepsMode = CheckDirectDepsMode.WARNING;
   private BazelCompatibilityMode bazelCompatibilityMode = BazelCompatibilityMode.ERROR;
+  private LockfileMode bazelLockfileMode = LockfileMode.OFF;
   private List<String> allowedYankedVersions = ImmutableList.of();
   private SingleExtensionEvalFunction singleExtensionEvalFunction;
+
+  @Nullable private CredentialModule credentialModule;
 
   public BazelRepositoryModule() {
     this.starlarkRepositoryFunction = new StarlarkRepositoryFunction(downloadManager);
@@ -231,7 +247,8 @@ public class BazelRepositoryModule extends BlazeModule {
               public RepoSpec getRepoSpec(RepositoryName repoName) {
                 return RepoSpec.builder()
                     .setRuleClassName("local_config_platform")
-                    .setAttributes(ImmutableMap.of("name", repoName.getName()))
+                    .setAttributes(
+                        AttributeValues.create(ImmutableMap.of("name", repoName.getName())))
                     .build();
               }
 
@@ -248,11 +265,17 @@ public class BazelRepositoryModule extends BlazeModule {
         .addSkyFunction(
             SkyFunctions.MODULE_FILE,
             new ModuleFileFunction(registryFactory, directories.getWorkspace(), builtinModules))
-        .addSkyFunction(SkyFunctions.BAZEL_MODULE_RESOLUTION, new BazelModuleResolutionFunction())
+        .addSkyFunction(
+            SkyFunctions.BAZEL_DEP_GRAPH, new BazelDepGraphFunction(directories.getWorkspace()))
+        .addSkyFunction(
+            SkyFunctions.BAZEL_LOCK_FILE, new BazelLockFileFunction(directories.getWorkspace()))
         .addSkyFunction(SkyFunctions.BAZEL_MODULE_INSPECTION, new BazelModuleInspectorFunction())
+        .addSkyFunction(SkyFunctions.BAZEL_MODULE_RESOLUTION, new BazelModuleResolutionFunction())
         .addSkyFunction(SkyFunctions.SINGLE_EXTENSION_EVAL, singleExtensionEvalFunction)
         .addSkyFunction(SkyFunctions.SINGLE_EXTENSION_USAGES, new SingleExtensionUsagesFunction());
     filesystem = runtime.getFileSystem();
+
+    credentialModule = Preconditions.checkNotNull(runtime.getBlazeModule(CredentialModule.class));
   }
 
   @Override
@@ -363,6 +386,41 @@ public class BazelRepositoryModule extends BlazeModule {
                 Code.BAD_DOWNLOADER_CONFIG));
       }
 
+      try {
+        AuthAndTLSOptions authAndTlsOptions = env.getOptions().getOptions(AuthAndTLSOptions.class);
+        var credentialHelperEnvironment =
+            CredentialHelperEnvironment.newBuilder()
+                .setEventReporter(env.getReporter())
+                .setWorkspacePath(env.getWorkspace())
+                .setClientEnvironment(env.getClientEnv())
+                .setHelperExecutionTimeout(authAndTlsOptions.credentialHelperTimeout)
+                .build();
+        CredentialHelperProvider credentialHelperProvider =
+            GoogleAuthUtils.newCredentialHelperProvider(
+                credentialHelperEnvironment,
+                env.getCommandLinePathFactory(),
+                authAndTlsOptions.credentialHelpers);
+
+        downloadManager.setCredentialFactory(
+            headers -> {
+              Preconditions.checkNotNull(headers);
+
+              return new CredentialHelperCredentials(
+                  credentialHelperProvider,
+                  credentialHelperEnvironment,
+                  credentialModule.getCredentialCache(),
+                  Optional.of(new StaticCredentials(headers)));
+            });
+      } catch (IOException e) {
+        env.getReporter().handle(Event.error(e.getMessage()));
+        env.getBlazeModuleEnvironment()
+            .exit(
+                new AbruptExitException(
+                    detailedExitCode(
+                        "Error initializing credential helper", Code.CREDENTIALS_INIT_FAILURE)));
+        return;
+      }
+
       if (repoOptions.experimentalDistdir != null) {
         downloadManager.setDistdir(
             repoOptions.experimentalDistdir.stream()
@@ -383,6 +441,8 @@ public class BazelRepositoryModule extends BlazeModule {
             .handle(Event.warn("Ignoring request to scale http timeouts by a non-positive factor"));
         httpDownloader.setTimeoutScaling(1.0f);
       }
+      httpDownloader.setMaxAttempts(repoOptions.httpConnectorAttempts);
+      httpDownloader.setMaxRetryTimeout(repoOptions.httpConnectorRetryMaxTimeout);
 
       if (repoOptions.repositoryOverrides != null) {
         // To get the usual latest-wins semantics, we need a mutable map, as the builder
@@ -390,7 +450,8 @@ public class BazelRepositoryModule extends BlazeModule {
         // We use a LinkedHashMap to preserve the iteration order.
         Map<RepositoryName, PathFragment> overrideMap = new LinkedHashMap<>();
         for (RepositoryOverride override : repoOptions.repositoryOverrides) {
-          overrideMap.put(override.repositoryName(), override.path());
+          String repoPath = getAbsolutePath(override.path(), env);
+          overrideMap.put(override.repositoryName(), PathFragment.create(repoPath));
         }
         ImmutableMap<RepositoryName, PathFragment> newOverrides = ImmutableMap.copyOf(overrideMap);
         if (!Maps.difference(overrides, newOverrides).areEqual()) {
@@ -402,9 +463,9 @@ public class BazelRepositoryModule extends BlazeModule {
 
       if (repoOptions.moduleOverrides != null) {
         Map<String, ModuleOverride> moduleOverrideMap = new LinkedHashMap<>();
-        for (RepositoryOptions.ModuleOverride modOverride : repoOptions.moduleOverrides) {
-          moduleOverrideMap.put(
-              modOverride.moduleName(), LocalPathOverride.create(modOverride.path()));
+        for (RepositoryOptions.ModuleOverride override : repoOptions.moduleOverrides) {
+          String modulePath = getAbsolutePath(override.path(), env);
+          moduleOverrideMap.put(override.moduleName(), LocalPathOverride.create(modulePath));
         }
         ImmutableMap<String, ModuleOverride> newModOverrides =
             ImmutableMap.copyOf(moduleOverrideMap);
@@ -418,6 +479,7 @@ public class BazelRepositoryModule extends BlazeModule {
       ignoreDevDeps.set(repoOptions.ignoreDevDependency);
       checkDirectDepsMode = repoOptions.checkDirectDependencies;
       bazelCompatibilityMode = repoOptions.bazelCompatibilityMode;
+      bazelLockfileMode = repoOptions.lockfileMode;
       allowedYankedVersions = repoOptions.allowedYankedVersions;
 
       if (repoOptions.registries != null && !repoOptions.registries.isEmpty()) {
@@ -467,6 +529,23 @@ public class BazelRepositoryModule extends BlazeModule {
     }
   }
 
+  /**
+   * If the given path is absolute path, leave it as it is. If the given path is a relative path, it
+   * is relative to the current working directory. If the given path starts with '%workspace%, it is
+   * relative to the workspace root, which is the output of `bazel info workspace`.
+   *
+   * @return Absolute Path
+   */
+  private String getAbsolutePath(String path, CommandEnvironment env) {
+    if (env.getWorkspace() != null) {
+      path = path.replace("%workspace%", env.getWorkspace().getPathString());
+    }
+    if (!PathFragment.isAbsolute(path)) {
+      path = env.getWorkingDirectory().getRelative(path).getPathString();
+    }
+    return path;
+  }
+
   @Override
   public ImmutableList<Injected> getPrecomputedValues() {
     return ImmutableList.of(
@@ -494,6 +573,7 @@ public class BazelRepositoryModule extends BlazeModule {
             BazelModuleResolutionFunction.CHECK_DIRECT_DEPENDENCIES, checkDirectDepsMode),
         PrecomputedValue.injected(
             BazelModuleResolutionFunction.BAZEL_COMPATIBILITY_MODE, bazelCompatibilityMode),
+        PrecomputedValue.injected(BazelLockFileFunction.LOCKFILE_MODE, bazelLockfileMode),
         PrecomputedValue.injected(
             BazelModuleResolutionFunction.ALLOWED_YANKED_VERSIONS, allowedYankedVersions));
   }

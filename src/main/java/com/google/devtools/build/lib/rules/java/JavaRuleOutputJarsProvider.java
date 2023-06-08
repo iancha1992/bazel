@@ -20,8 +20,9 @@ import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
+import com.google.devtools.build.lib.collect.compacthashset.CompactHashSet;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.rules.java.JavaInfo.JavaInfoInternalProvider;
 import com.google.devtools.build.lib.rules.java.JavaRuleOutputJarsProvider.JavaOutput;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
 import com.google.devtools.build.lib.starlarkbuildapi.java.JavaOutputApi;
@@ -37,7 +38,7 @@ import net.starlark.java.eval.StarlarkList;
 /** Provides information about jar files produced by a Java rule. */
 @Immutable
 public final class JavaRuleOutputJarsProvider
-    implements TransitiveInfoProvider, JavaRuleOutputJarsProviderApi<JavaOutput> {
+    implements JavaInfoInternalProvider, JavaRuleOutputJarsProviderApi<JavaOutput> {
 
   @SerializationConstant
   public static final JavaRuleOutputJarsProvider EMPTY =
@@ -148,8 +149,6 @@ public final class JavaRuleOutputJarsProvider
       public abstract Builder setManifestProto(Artifact value);
 
       public abstract Builder setJdeps(Artifact value);
-
-      public abstract Builder setSourceJars(Iterable<Artifact> value);
 
       abstract ImmutableList.Builder<Artifact> sourceJarsBuilder();
 
@@ -264,7 +263,8 @@ public final class JavaRuleOutputJarsProvider
 
   /** Builder for {@link JavaRuleOutputJarsProvider}. */
   public static class Builder {
-    private final ImmutableList.Builder<JavaOutput> javaOutputs = ImmutableList.builder();
+    // CompactHashSet preserves insertion order here since we never perform any removals
+    private final CompactHashSet<JavaOutput> javaOutputs = CompactHashSet.create();
 
     @CanIgnoreReturnValue
     public Builder addJavaOutput(JavaOutput javaOutput) {
@@ -273,13 +273,13 @@ public final class JavaRuleOutputJarsProvider
     }
 
     @CanIgnoreReturnValue
-    public Builder addJavaOutput(Iterable<JavaOutput> javaOutputs) {
+    public Builder addJavaOutput(Collection<JavaOutput> javaOutputs) {
       this.javaOutputs.addAll(javaOutputs);
       return this;
     }
 
     public JavaRuleOutputJarsProvider build() {
-      return new JavaRuleOutputJarsProvider(javaOutputs.build());
+      return new JavaRuleOutputJarsProvider(ImmutableList.copyOf(javaOutputs));
     }
   }
 }

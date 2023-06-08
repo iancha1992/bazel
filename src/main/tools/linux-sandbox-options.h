@@ -17,8 +17,11 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+
 #include <string>
 #include <vector>
+
+enum NetNamespaceOption { NO_NETNS, NETNS, NETNS_WITH_LOOPBACK };
 
 // Options parsing result.
 struct Options {
@@ -48,8 +51,8 @@ struct Options {
   std::string stats_path;
   // Set the hostname inside the sandbox to 'localhost' (-H)
   bool fake_hostname;
-  // Create a new network namespace (-N)
-  bool create_netns;
+  // Create a new network namespace (-n/-N)
+  NetNamespaceOption create_netns;
   // Pretend to be root inside the namespace (-R)
   bool fake_root;
   // Set the username inside the sandbox to 'nobody' (-U)
@@ -58,11 +61,13 @@ struct Options {
   // pseudoterminals (-P)
   bool enable_pty;
   // Print debugging messages (-D)
-  bool debug;
+  std::string debug_path;
   // Improved hermetic build using whitelisting strategy (-h)
   bool hermetic;
   // The sandbox root directory (-s)
   std::string sandbox_root;
+  // Directory to use for cgroup control
+  std::string cgroups_dir;
   // Command to run (--)
   std::vector<char *> args;
 };

@@ -79,7 +79,6 @@ public class AppleStaticLibraryTest extends ObjcRuleTestCase {
   public final void setup() throws Exception {
     scratch.file("test_starlark/BUILD");
     RepositoryName toolsRepo = TestConstants.TOOLS_REPOSITORY;
-    String toolsLoc = toolsRepo + "//tools/objc";
 
     scratch.file(
         "test_starlark/apple_static_library.bzl",
@@ -134,10 +133,6 @@ public class AppleStaticLibraryTest extends ObjcRuleTestCase {
         "        '_xcode_config': attr.label(",
         "            default=configuration_field(",
         "                fragment='apple', name='xcode_config_label'),),",
-        "        '_xcrunwrapper': attr.label(",
-        "            executable=True,",
-        "            cfg='exec',",
-        "            default=Label('" + toolsLoc + ":xcrunwrapper')),",
         "        'additional_linker_inputs': attr.label_list(",
         "            allow_files = True,",
         "        ),",
@@ -235,32 +230,6 @@ public class AppleStaticLibraryTest extends ObjcRuleTestCase {
 
     assertThat(Artifact.toRootRelativePaths(action.getOutputs())).containsExactly("x/x_lipo.a");
     assertRequiresDarwin(action);
-  }
-
-  @Test
-  public void testWatchSimulatorDepCompile() throws Exception {
-    scratch.file(
-        "package/BUILD",
-        "load('//test_starlark:apple_static_library.bzl', 'apple_static_library')",
-        "apple_static_library(",
-        "    name = 'test',",
-        "    deps = [':objcLib'],",
-        "    platform_type = 'watchos',",
-        "    minimum_os_version = '2.0',",
-        ")",
-        "objc_library(name = 'objcLib', srcs = [ 'a.m' ])");
-
-    Action lipoAction = lipoLibAction("//package:test");
-
-    String i386Bin = "i386-apple-watchos-fl.a";
-    Artifact libArtifact = getFirstArtifactEndingWith(lipoAction.getInputs(), i386Bin);
-    CommandAction linkAction = (CommandAction) getGeneratingAction(libArtifact);
-    CommandAction objcLibCompileAction =
-        (CommandAction)
-            getGeneratingAction(getFirstArtifactEndingWith(linkAction.getInputs(), "libobjcLib.a"));
-
-    assertAppleSdkPlatformEnv(objcLibCompileAction, "WatchSimulator");
-    assertThat(objcLibCompileAction.getArguments()).containsAtLeast("-arch_only", "i386").inOrder();
   }
 
   @Test
@@ -636,13 +605,11 @@ public class AppleStaticLibraryTest extends ObjcRuleTestCase {
         "        'deps': attr.label_list(",
         "            cfg = apple_common.multi_arch_split,",
         "            providers = [apple_common.Objc],",
-        "            flags = ['DIRECT_COMPILE_TIME_INPUT'],",
         "            allow_rules = ['cc_library', 'cc_inc_library'],",
         "        ),",
         "        'avoid_deps': attr.label_list(",
         "            cfg = apple_common.multi_arch_split,",
         "            providers = [apple_common.Objc],",
-        "            flags = ['DIRECT_COMPILE_TIME_INPUT'],",
         "            allow_rules = ['cc_library', 'cc_inc_library'],",
         "        ),",
         "        # test attr to assert built targets",

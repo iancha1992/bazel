@@ -46,6 +46,7 @@ import com.google.devtools.build.lib.packages.Type.ConversionException;
 import com.google.devtools.build.lib.pkgcache.LoadingFailureEvent;
 import com.google.devtools.build.lib.skyframe.ActionLookupConflictFindingFunction;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
+import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.testutil.TestConstants.InternalTestExecutionMode;
 import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
 import com.google.devtools.build.lib.util.Pair;
@@ -98,7 +99,7 @@ public class BuildViewTest extends BuildViewTestBase {
 
     ConfiguredTargetAndData ruleCTAT = getConfiguredTargetAndTarget("//pkg:foo");
 
-    assertThat(ruleCTAT.getTarget()).isSameInstanceAs(ruleTarget);
+    assertThat(ruleCTAT.getTargetForTesting()).isSameInstanceAs(ruleTarget);
   }
 
   @Test
@@ -134,8 +135,7 @@ public class BuildViewTest extends BuildViewTestBase {
     targets =
         Lists.newArrayList(
             BuildView.filterTestsByTargets(
-                targets,
-                Sets.newHashSet(test1.getTarget().getLabel(), suite.getTarget().getLabel())));
+                targets, Sets.newHashSet(test1.getTargetLabel(), suite.getTargetLabel())));
     assertThat(targets).containsExactlyElementsIn(Sets.newHashSet(test1CT, suiteCT));
   }
 
@@ -498,12 +498,14 @@ public class BuildViewTest extends BuildViewTestBase {
         "sh_binary(name='inner', srcs=['script.sh'])");
     update("//package:top");
     ConfiguredTarget top = getConfiguredTarget("//package:top", getTargetConfiguration());
-    Iterable<ConfiguredTarget> targets = getView().getDirectPrerequisitesForTesting(
-        reporter, top, getBuildConfigurationCollection());
+    Iterable<ConfiguredTarget> targets =
+        getView().getDirectPrerequisitesForTesting(reporter, top, getBuildConfiguration());
     Iterable<Label> labels = Iterables.transform(targets, TransitiveInfoCollection::getLabel);
     assertThat(labels)
         .containsExactly(
-            Label.parseCanonical("//package:inner"), Label.parseCanonical("//package:file"));
+            Label.parseCanonical("//package:inner"),
+            Label.parseCanonical("//package:file"),
+            Label.parseCanonical(TestConstants.PLATFORM_LABEL));
   }
 
   @Test
@@ -525,7 +527,7 @@ public class BuildViewTest extends BuildViewTestBase {
     Iterable<DependencyKey> targets =
         getView()
             .getDirectPrerequisiteDependenciesForTesting(
-                reporter, top, getBuildConfigurationCollection(), /* toolchainContexts= */ null)
+                reporter, top, /* toolchainContexts= */ null)
             .values();
 
     DependencyKey innerDependency =
@@ -747,11 +749,12 @@ public class BuildViewTest extends BuildViewTestBase {
         "          srcs = glob(['A*.java']))",
         "java_test(name = 'B',",
         "          srcs = ['B.java'])");
+    useConfiguration("--experimental_google_legacy_api");
     ConfiguredTarget ct = Iterables.getOnlyElement(update("//java/a:A").getTargetsToBuild());
     scratch.deleteFile("java/a/C.java");
     update("//java/a:B");
     update("//java/a:A");
-    assertThat(getGeneratingAction(getBinArtifact("A_deploy.jar", ct))).isNotNull();
+    assertThat(getGeneratingAction(getBinArtifact("A.jar", ct))).isNotNull();
   }
 
   /** Regression test for b/14248208. */
@@ -1329,10 +1332,10 @@ public class BuildViewTest extends BuildViewTestBase {
                     attr("$implicit1", BuildType.LABEL_LIST)
                         .defaultValue(
                             ImmutableList.of(
-                                Label.parseAbsoluteUnchecked("//bad2:label"),
-                                Label.parseAbsoluteUnchecked("//foo:dep"))),
+                                Label.parseCanonicalUnchecked("//bad2:label"),
+                                Label.parseCanonicalUnchecked("//foo:dep"))),
                     attr("$implicit2", BuildType.LABEL)
-                        .defaultValue(Label.parseAbsoluteUnchecked("//bad:label")));
+                        .defaultValue(Label.parseCanonicalUnchecked("//bad:label")));
               } catch (ConversionException e) {
                 throw new IllegalStateException(e);
               }

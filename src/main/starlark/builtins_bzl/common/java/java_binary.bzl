@@ -14,19 +14,20 @@
 
 """ Implementation of java_binary for bazel """
 
-load(":common/java/java_common.bzl", "BASIC_JAVA_LIBRARY_WITH_PROGUARD_IMPLICIT_ATTRS", "basic_java_library")
+load(":common/java/java_common.bzl", "BASIC_JAVA_LIBRARY_IMPLICIT_ATTRS", "basic_java_library", "collect_deps")
 load(":common/java/java_util.bzl", "create_single_jar")
 load(":common/java/java_helper.bzl", helper = "util")
 load(":common/java/java_semantics.bzl", "semantics")
 load(":common/rule_util.bzl", "merge_attrs")
 load(":common/cc/cc_helper.bzl", "cc_helper")
 load(":common/cc/semantics.bzl", cc_semantics = "semantics")
+load(":common/proto/proto_info.bzl", "ProtoInfo")
+load(":common/cc/cc_info.bzl", "CcInfo")
+load(":common/paths.bzl", "paths")
 
-CcInfo = _builtins.toplevel.CcInfo
 CcLauncherInfo = _builtins.internal.cc_internal.launcher_provider
 JavaInfo = _builtins.toplevel.JavaInfo
 JavaPluginInfo = _builtins.toplevel.JavaPluginInfo
-ProtoInfo = _builtins.toplevel.ProtoInfo
 java_common = _builtins.toplevel.java_common
 
 InternalDeployJarInfo = provider(
@@ -38,9 +39,11 @@ InternalDeployJarInfo = provider(
         "main_class",
         "coverage_main_class",
         "strip_as_default",
+        "stamp",
         "hermetic",
         "add_exports",
         "add_opens",
+        "manifest_lines",
     ],
 )
 
@@ -49,10 +52,10 @@ JavaRuntimeClasspathInfo = provider(
     fields = ["runtime_classpath"],
 )
 
-# TODO(hvd): inline implicit deps, toolchains
 def basic_java_binary(
         ctx,
         deps,
+        runtime_deps,
         resources,
         main_class,
         coverage_main_class,
@@ -61,12 +64,14 @@ def basic_java_binary(
         executable,
         feature_config,
         strip_as_default,
-        extension_registry_provider = None):
+        extension_registry_provider = None,
+        is_test_rule_class = False):
     """Creates actions for compiling and linting java sources, coverage support, and sources jar (_deploy-src.jar).
 
     Args:
         ctx: (RuleContext) The rule context
-        deps: (list[Target]) The list of other targets to be linked in
+        deps: (list[Target]) The list of other targets to be compiled with
+        runtime_deps: (list[Target]) The list of other targets to be linked in
         resources: (list[File]) The list of data files to be included in the class jar
         main_class: (String) FQN of the java main class
         coverage_main_class: (String) FQN of the actual main class if coverage is enabled
@@ -76,6 +81,7 @@ def basic_java_binary(
         feature_config: (FeatureConfiguration) The result of cc_common.configure_features()
         strip_as_default: (bool) Whether this target outputs a stripped launcher and deploy jar
         extension_registry_provider: (GeneratedExtensionRegistryProvider) internal param, do not use
+        is_test_rule_class: (bool) Whether this rule is a test rule
 
     Returns:
         Tuple(
@@ -89,11 +95,6 @@ def basic_java_binary(
           )
 
     """
-    toolchain = semantics.find_java_toolchain(ctx)
-    java_runtime_toolchain = semantics.find_java_runtime_toolchain(ctx)
-    cc_toolchain = cc_helper.find_cpp_toolchain(ctx)
-
-    # TODO(hvd): add docstring once signature is finalized
     if not ctx.attr.create_executable and ctx.attr.launcher:
         fail("launcher specified but create_executable is false")
     if not ctx.attr.use_launcher and ctx.attr.launcher:
@@ -102,7 +103,7 @@ def basic_java_binary(
     if not ctx.attr.srcs and ctx.attr.deps:
         fail("deps not allowed without srcs; move to runtime_deps?")
 
-    module_flags = [dep[JavaInfo].module_flags_info for dep in deps if JavaInfo in dep]
+    module_flags = [dep[JavaInfo].module_flags_info for dep in runtime_deps if JavaInfo in dep]
     add_exports = depset(ctx.attr.add_exports, transitive = [m.add_exports for m in module_flags])
     add_opens = depset(ctx.attr.add_opens, transitive = [m.add_opens for m in module_flags])
 
@@ -111,15 +112,16 @@ def basic_java_binary(
     if hasattr(ctx.files, "classpath_resources"):
         classpath_resources.extend(ctx.files.classpath_resources)
 
+    toolchain = semantics.find_java_toolchain(ctx)
+    timezone_data = [toolchain.timezone_data()] if toolchain.timezone_data() else []
     target, common_info = basic_java_library(
         ctx,
         srcs = ctx.files.srcs,
-        deps = ctx.attr.deps,
-        # TODO(b/213551463): There seems to be duplication of deps.
-        runtime_deps = ctx.attr.runtime_deps + deps,
+        deps = deps,
+        runtime_deps = runtime_deps,
         plugins = ctx.attr.plugins,
         resources = resources,
-        resource_jars = ([toolchain.timezone_data()] if toolchain.timezone_data() else []),
+        resource_jars = timezone_data,
         classpath_resources = classpath_resources,
         javacopts = ctx.attr.javacopts,
         neverlink = ctx.attr.neverlink,
@@ -129,7 +131,18 @@ def basic_java_binary(
         add_opens = ctx.attr.add_opens,
     )
     java_info = target["JavaInfo"]
+    runtime_classpath = depset(
+        order = "preorder",
+        transitive = [
+            java_info.transitive_runtime_jars
+            for java_info in (
+                collect_deps(ctx.attr.runtime_deps + deps) +
+                ([coverage_config.runner] if coverage_config and coverage_config.runner else [])
+            )
+        ],
+    )
     if extension_registry_provider:
+        runtime_classpath = depset(order = "preorder", direct = [extension_registry_provider.class_jar], transitive = [runtime_classpath])
         java_info = java_common.merge(
             [
                 java_info,
@@ -141,11 +154,13 @@ def basic_java_binary(
             ],
         )
 
+    java_attrs = _collect_attrs(ctx, runtime_classpath, classpath_resources)
+
     jvm_flags = []
 
     jvm_flags.extend(launcher_info.jvm_flags)
 
-    native_libs_dirs = java_common.collect_native_deps_dirs(deps)
+    native_libs_dirs = java_common.collect_native_deps_dirs(runtime_deps)
     if native_libs_dirs:
         prefix = "${JAVA_RUNFILES}/" + ctx.workspace_name + "/"
         jvm_flags.append("-Djava.library.path=%s" % (
@@ -166,8 +181,6 @@ def basic_java_binary(
 
     files_to_build = []
 
-    java_attrs = _collect_attrs(ctx, java_info, classpath_resources)
-
     if executable:
         files_to_build.append(executable)
 
@@ -177,7 +190,7 @@ def basic_java_binary(
         _generate_coverage_manifest(ctx, coverage_config.manifest, java_attrs.runtime_classpath)
         files_to_build.append(coverage_config.manifest)
 
-    shared_archive = _create_shared_archive(ctx, java_runtime_toolchain, java_attrs)
+    shared_archive = _create_shared_archive(ctx, java_attrs)
 
     if extension_registry_provider:
         files_to_build.append(extension_registry_provider.class_jar)
@@ -189,13 +202,16 @@ def basic_java_binary(
             transitive = [output_groups["_source_jars"]],
         )
 
-    one_version_output = _create_one_version_check(ctx, java_info.transitive_runtime_jars)
+    one_version_output = _create_one_version_check(ctx, java_attrs.runtime_classpath) if (
+        ctx.fragments.java.one_version_enforcement_on_java_tests or not is_test_rule_class
+    ) else None
     validation_outputs = [one_version_output] if one_version_output else []
 
     _create_deploy_sources_jar(ctx, output_groups["_source_jars"])
 
     files = depset(files_to_build + common_info.files_to_build)
 
+    java_runtime_toolchain = semantics.find_java_runtime_toolchain(ctx)
     transitive_runfiles_artifacts = depset(transitive = [
         files,
         java_attrs.runtime_classpath,
@@ -212,7 +228,7 @@ def basic_java_binary(
     if not helper.is_absolute_path(ctx, java_runtime_toolchain.java_home):
         runfiles_symlinks = {
             ("_cpp_runtimes/%s" % lib.basename): lib
-            for lib in cc_toolchain.dynamic_runtime_lib(
+            for lib in cc_helper.find_cpp_toolchain(ctx).dynamic_runtime_lib(
                 feature_configuration = feature_config,
             ).to_list()
         }
@@ -221,6 +237,7 @@ def basic_java_binary(
         transitive_files = transitive_runfiles_artifacts,
         collect_default = True,
         symlinks = runfiles_symlinks,
+        skip_conflict_checking = True,
     )
 
     if launcher_info.launcher:
@@ -285,19 +302,22 @@ def basic_java_binary(
             main_class = main_class,
             coverage_main_class = coverage_main_class,
             strip_as_default = strip_as_default,
+            stamp = ctx.attr.stamp,
             hermetic = hasattr(ctx.attr, "hermetic") and ctx.attr.hermetic,
             add_exports = add_exports,
             add_opens = add_opens,
+            manifest_lines = ctx.attr.deploy_manifest_lines,
         ),
     }, default_info, jvm_flags
 
-def _collect_attrs(ctx, java_info, classpath_resources):
+def _collect_attrs(ctx, runtime_classpath, classpath_resources):
     deploy_env_jars = depset(transitive = [
         dep[JavaRuntimeClasspathInfo].runtime_classpath
         for dep in ctx.attr.deploy_env
-    ])
-    runtime_classpath_for_archive = java_common.get_runtime_classpath_for_archive(java_info.transitive_runtime_jars, deploy_env_jars)
-    runtime_jars = depset([ctx.outputs.classjar])
+    ]) if hasattr(ctx.attr, "deploy_env") else depset()
+
+    runtime_classpath_for_archive = java_common.get_runtime_classpath_for_archive(runtime_classpath, deploy_env_jars)
+    runtime_jars = [ctx.outputs.classjar]
 
     resources = [p for p in ctx.files.srcs if p.extension == "properties"]
     transitive_resources = []
@@ -313,10 +333,10 @@ def _collect_attrs(ctx, java_info, classpath_resources):
         resource_names[r.basename] = None
 
     return struct(
-        runtime_jars = runtime_jars,
+        runtime_jars = depset(runtime_jars),
         runtime_classpath_for_archive = runtime_classpath_for_archive,
         classpath_resources = depset(classpath_resources),
-        runtime_classpath = depset(transitive = [runtime_jars, java_info.transitive_runtime_jars]),
+        runtime_classpath = depset(order = "preorder", direct = runtime_jars, transitive = [runtime_classpath]),
         resources = depset(resources, transitive = transitive_resources),
     )
 
@@ -327,7 +347,8 @@ def _generate_coverage_manifest(ctx, output, runtime_classpath):
     )
 
 #TODO(hvd): not needed in bazel
-def _create_shared_archive(ctx, runtime, java_attrs):
+def _create_shared_archive(ctx, java_attrs):
+    runtime = semantics.find_java_runtime_toolchain(ctx)
     classlist = ctx.file.classlist if hasattr(ctx.file, "classlist") else None
     if not classlist:
         return None
@@ -365,6 +386,7 @@ def _create_shared_archive(ctx, runtime, java_attrs):
         mnemonic = "JavaJSA",
         progress_message = "Dumping Java Shared Archive %s" % jsa.short_path,
         executable = runtime.java_executable_exec_path,
+        toolchain = semantics.JAVA_RUNTIME_TOOLCHAIN_TYPE,
         inputs = depset(input_files, transitive = [runtime.files]),
         outputs = [jsa],
         arguments = [args],
@@ -399,6 +421,7 @@ def _create_one_version_check(ctx, inputs):
         mnemonic = "JavaOneVersion",
         progress_message = "Checking for one-version violations in %{label}",
         executable = tool,
+        toolchain = semantics.JAVA_TOOLCHAIN_TYPE,
         inputs = depset([allowlist], transitive = [inputs]),
         tools = [tool],
         outputs = [output],
@@ -419,7 +442,7 @@ def _filter_validation_output_group(ctx, output_group):
         dep[OutputGroupInfo]._validation
         for dep in ctx.attr.deploy_env
         if OutputGroupInfo in dep and hasattr(dep[OutputGroupInfo], "_validation")
-    ])
+    ]) if hasattr(ctx.attr, "deploy_env") else depset()
     if to_exclude:
         transitive_validations = depset(transitive = [
             _get_validations_from_attr(ctx, attr_name)
@@ -465,7 +488,7 @@ def _get_validations_from_target(target):
         return depset()
 
 BASIC_JAVA_BINARY_ATTRIBUTES = merge_attrs(
-    BASIC_JAVA_LIBRARY_WITH_PROGUARD_IMPLICIT_ATTRS,
+    BASIC_JAVA_LIBRARY_IMPLICIT_ATTRS,
     {
         "srcs": attr.label_list(
             allow_files = [".java", ".srcjar", ".properties"] + semantics.EXTRA_SRCS_TYPES,
@@ -520,6 +543,7 @@ BASIC_JAVA_BINARY_ATTRIBUTES = merge_attrs(
         "use_launcher": attr.bool(default = True),
         "env": attr.string_dict(),
         "classpath_resources": attr.label_list(allow_files = True),
+        "licenses": attr.license() if hasattr(attr, "license") else attr.string_list(),
         "_stub_template": attr.label(
             default = semantics.JAVA_STUB_TEMPLATE_LABEL,
             allow_single_file = True,
@@ -530,3 +554,16 @@ BASIC_JAVA_BINARY_ATTRIBUTES = merge_attrs(
         "_java_runtime_toolchain_type": attr.label(default = semantics.JAVA_RUNTIME_TOOLCHAIN_TYPE),
     },
 )
+
+BASE_TEST_ATTRIBUTES = {
+    "test_class": attr.string(),
+    "env_inherit": attr.string_list(),
+    "_apple_constraints": attr.label_list(
+        default = [
+            "@" + paths.join(cc_semantics.get_platforms_root(), "os:ios"),
+            "@" + paths.join(cc_semantics.get_platforms_root(), "os:macos"),
+            "@" + paths.join(cc_semantics.get_platforms_root(), "os:tvos"),
+            "@" + paths.join(cc_semantics.get_platforms_root(), "os:watchos"),
+        ],
+    ),
+}

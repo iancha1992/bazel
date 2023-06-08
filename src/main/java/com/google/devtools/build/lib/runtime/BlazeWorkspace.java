@@ -63,7 +63,8 @@ public final class BlazeWorkspace {
 
   private final BlazeDirectories directories;
   private final SkyframeExecutor skyframeExecutor;
-  private final SyscallCache perCommandSyscallCache;
+  private final SyscallCache syscallCache;
+  private final QuiescingExecutorsImpl quiescingExecutors;
 
   /**
    * Loaded lazily on the first build command that enables the action cache. Cleared on a build
@@ -76,6 +77,8 @@ public final class BlazeWorkspace {
 
   private final String outputBaseFilesystemTypeName;
 
+  private final boolean allowExternalRepositories;
+
   public BlazeWorkspace(
       BlazeRuntime runtime,
       BlazeDirectories directories,
@@ -84,7 +87,8 @@ public final class BlazeWorkspace {
       WorkspaceStatusAction.Factory workspaceStatusActionFactory,
       BinTools binTools,
       @Nullable AllocationTracker allocationTracker,
-      SyscallCache perCommandSyscallCache) {
+      SyscallCache syscallCache,
+      boolean allowExternalRepositories) {
     this.runtime = runtime;
     this.eventBusExceptionHandler = Preconditions.checkNotNull(eventBusExceptionHandler);
     this.workspaceStatusActionFactory = workspaceStatusActionFactory;
@@ -93,7 +97,9 @@ public final class BlazeWorkspace {
 
     this.directories = directories;
     this.skyframeExecutor = skyframeExecutor;
-    this.perCommandSyscallCache = perCommandSyscallCache;
+    this.syscallCache = syscallCache;
+    this.quiescingExecutors = QuiescingExecutorsImpl.createDefault();
+    this.allowExternalRepositories = allowExternalRepositories;
 
     if (directories.inWorkspace()) {
       writeOutputBaseReadmeFile();
@@ -203,6 +209,7 @@ public final class BlazeWorkspace {
       long commandStartTime,
       List<Any> commandExtensions,
       Consumer<String> shutdownReasonConsumer) {
+    quiescingExecutors.resetParameters(options);
     CommandEnvironment env =
         new CommandEnvironment(
             runtime,
@@ -211,7 +218,8 @@ public final class BlazeWorkspace {
             Thread.currentThread(),
             command,
             options,
-            perCommandSyscallCache,
+            syscallCache,
+            quiescingExecutors,
             warnings,
             waitTimeInMs,
             commandStartTime,
@@ -270,6 +278,12 @@ public final class BlazeWorkspace {
     return actionCache;
   }
 
+  /** Returns reference to the lazily instantiated persistent action cache instance */
+  @Nullable
+  public ActionCache getPersistentActionCache() {
+    return actionCache;
+  }
+
   /**
    * Generates a README file in the output base directory. This README file
    * contains the name of the workspace directory, so that users can figure out
@@ -320,6 +334,10 @@ public final class BlazeWorkspace {
   @Nullable
   public AllocationTracker getAllocationTracker() {
     return allocationTracker;
+  }
+
+  public boolean doesAllowExternalRepositories() {
+    return allowExternalRepositories;
   }
 }
 

@@ -19,7 +19,6 @@ import static java.nio.charset.StandardCharsets.ISO_8859_1;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
-import com.google.common.collect.Iterables;
 import com.google.common.io.BaseEncoding;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
@@ -31,6 +30,7 @@ import com.google.devtools.build.lib.actions.CommandLineExpansionException;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.ParameterFile;
 import com.google.devtools.build.lib.actions.ParameterFile.ParameterFileType;
+import com.google.devtools.build.lib.actions.PathStripper;
 import com.google.devtools.build.lib.actions.UserExecException;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
@@ -39,7 +39,6 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.Spawn;
 import com.google.devtools.build.lib.server.FailureDetails.Spawn.Code;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
 import com.google.devtools.build.lib.util.Fingerprint;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -118,7 +117,7 @@ public final class ParameterFileWriteAction extends AbstractFileWriteAction {
       throws CommandLineExpansionException, InterruptedException, IOException {
     ByteArrayOutputStream out = new ByteArrayOutputStream();
     ParameterFile.writeParameterFile(out, getArguments(), type, ISO_8859_1);
-    return new String(out.toByteArray(), ISO_8859_1);
+    return out.toString(ISO_8859_1);
   }
 
   @Nullable
@@ -153,11 +152,6 @@ public final class ParameterFileWriteAction extends AbstractFileWriteAction {
     return new ParamFileWriter(arguments, type);
   }
 
-  @VisibleForSerialization
-  Artifact getOutput() {
-    return Iterables.getOnlyElement(outputs);
-  }
-
   private static class ParamFileWriter implements DeterministicWriter {
     private final Iterable<String> arguments;
     private final ParameterFileType type;
@@ -182,7 +176,8 @@ public final class ParameterFileWriteAction extends AbstractFileWriteAction {
     fp.addString(GUID);
     fp.addString(String.valueOf(makeExecutable));
     fp.addString(type.toString());
-    commandLine.addToFingerprint(actionKeyContext, artifactExpander, fp);
+    commandLine.addToFingerprint(
+        actionKeyContext, artifactExpander, fp, PathStripper.PathMapper.NOOP);
   }
 
   @Override
@@ -200,7 +195,7 @@ public final class ParameterFileWriteAction extends AbstractFileWriteAction {
       // incomprehensible. Instead, just give a digest, which makes it easy to
       // tell if two contents are equal or not.
       var fp = new Fingerprint();
-      commandLine.addToFingerprint(new ActionKeyContext(), null, fp);
+      commandLine.addToFingerprint(new ActionKeyContext(), null, fp, PathStripper.PathMapper.NOOP);
       message.append(BaseEncoding.base16().lowerCase().encode(fp.digestAndReset()));
       message.append(
           "\n"

@@ -31,7 +31,7 @@ import net.starlark.java.eval.StarlarkValue;
  */
 @StarlarkBuiltin(
     name = "CompilationContext",
-    category = DocCategory.PROVIDER,
+    category = DocCategory.BUILTIN,
     doc =
         "Immutable store of information needed for C++ compilation that is aggregated across "
             + "dependencies.")
@@ -151,4 +151,10 @@ public interface CcCompilationContextApi<FileT extends FileApi> extends Starlark
             allowedTypes = {@ParamType(type = Boolean.class)})
       })
   Depset getStarlarkTransitiveModules(boolean usePic, StarlarkThread thread) throws EvalException;
+
+  @StarlarkMethod(
+      name = "virtual_to_original_headers",
+      documented = false,
+      useStarlarkThread = true)
+  Depset getStarlarkVirtualToOriginalHeaders(StarlarkThread thread) throws EvalException;
 }

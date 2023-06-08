@@ -14,7 +14,10 @@
 
 package com.google.devtools.build.lib.analysis;
 
+import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.devtools.build.lib.analysis.config.BuildConfigurationValue.configurationIdMessage;
+import static com.google.devtools.build.lib.buildeventstream.BuildEventIdUtil.configurationIdMessage;
 
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Iterables;
@@ -22,7 +25,6 @@ import com.google.common.collect.Multimap;
 import com.google.common.eventbus.Subscribe;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.util.AnalysisTestCase;
-import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId.ConfigurationId;
 import com.google.devtools.build.lib.causes.AnalysisFailedCause;
 import com.google.devtools.build.lib.causes.Cause;
 import com.google.devtools.build.lib.causes.LoadingFailedCause;
@@ -31,10 +33,12 @@ import com.google.devtools.build.lib.server.FailureDetails.Analysis;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.PackageLoading;
 import com.google.devtools.build.lib.server.FailureDetails.PackageLoading.Code;
+import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.Collection;
+import java.util.HashMap;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -57,10 +61,6 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
     eventBus.register(collector);
   }
 
-  private static ConfigurationId toId(BuildConfigurationValue config) {
-    return config == null ? null : config.getEventId().getConfiguration();
-  }
-
   @Test
   public void testMissingRequiredAttribute() throws Exception {
     scratch.file(
@@ -69,7 +69,7 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
         "        cmd = '')");
     AnalysisResult result = update(eventBus, defaultFlags().with(Flag.KEEP_GOING), "//foo");
     assertThat(result.hasError()).isTrue();
-    Label topLevel = Label.parseAbsoluteUnchecked("//foo");
+    Label topLevel = Label.parseCanonicalUnchecked("//foo");
 
     assertThat(collector.events.keySet()).containsExactly(topLevel);
 
@@ -95,16 +95,15 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
         "        outs = ['foo.txt'])");
     AnalysisResult result = update(eventBus, defaultFlags().with(Flag.KEEP_GOING), "//foo");
     assertThat(result.hasError()).isTrue();
-    Label topLevel = Label.parseAbsoluteUnchecked("//foo");
-    Label causeLabel = Label.parseAbsoluteUnchecked("//bar");
+    Label topLevel = Label.parseCanonicalUnchecked("//foo");
+    Label causeLabel = Label.parseCanonicalUnchecked("//bar");
     assertThat(collector.events.keySet()).containsExactly(topLevel);
     assertThat(collector.events.get(topLevel))
         .containsExactly(
             new AnalysisFailedCause(
                 causeLabel,
-                toId(
-                    Iterables.getOnlyElement(result.getTopLevelTargetsWithConfigs())
-                        .getConfiguration()),
+                configurationIdMessage(
+                    getOnlyElement(collector.failedTargets.values()).getConfigurationKey()),
                 createPackageLoadingDetailedExitCode(
                     "BUILD file not found in any of the following"
                         + " directories. Add a BUILD file to a directory to mark it as a"
@@ -124,16 +123,15 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
         ")");
     AnalysisResult result = update(eventBus, defaultFlags().with(Flag.KEEP_GOING), "//test:bad");
     assertThat(result.hasError()).isTrue();
-    Label topLevel = Label.parseAbsoluteUnchecked("//test:bad");
+    Label topLevel = Label.parseCanonicalUnchecked("//test:bad");
     assertThat(collector.events.keySet()).containsExactly(topLevel);
     assertThat(collector.events)
         .valuesForKey(topLevel)
         .containsExactly(
             new AnalysisFailedCause(
                 topLevel,
-                toId(
-                    Iterables.getOnlyElement(result.getTopLevelTargetsWithConfigs())
-                        .getConfiguration()),
+                configurationIdMessage(
+                    getOnlyElement(collector.failedTargets.values()).getConfigurationKey()),
                 createAnalysisDetailedExitCode(
                     "in cmd attribute of genrule rule //test:bad: variable '$<' : no input file")));
   }
@@ -158,7 +156,7 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
     AnalysisResult result = update(eventBus, defaultFlags().with(Flag.KEEP_GOING), "//gp");
     assertThat(result.hasError()).isTrue();
 
-    Label topLevel = Label.parseAbsoluteUnchecked("//gp");
+    Label topLevel = Label.parseCanonicalUnchecked("//gp");
     String message =
         "Symlink issue while evaluating globs: Symlink cycle:" + " /workspace/cycles1/cycles1.sh";
     Code code = Code.EVAL_GLOBS_SYMLINK_ERROR;
@@ -166,9 +164,7 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
         .containsExactly(
             new AnalysisFailedCause(
                 Label.parseCanonical("//cycles1"),
-                toId(
-                    Iterables.getOnlyElement(result.getTopLevelTargetsWithConfigs())
-                        .getConfiguration()),
+                configurationIdMessage(collector.failedTargets.get(topLevel).getConfigurationKey()),
                 createPackageLoadingDetailedExitCode(message, code)));
   }
 
@@ -180,14 +176,13 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
     AnalysisResult result = update(eventBus, defaultFlags().with(Flag.KEEP_GOING), "//foo");
     assertThat(result.hasError()).isTrue();
 
-    Label topLevel = Label.parseAbsoluteUnchecked("//foo");
+    Label topLevel = Label.parseCanonicalUnchecked("//foo");
     assertThat(collector.events.get(topLevel))
         .containsExactly(
             new AnalysisFailedCause(
                 Label.parseCanonical("//foo"),
-                toId(
-                    Iterables.getOnlyElement(result.getTopLevelTargetsWithConfigs())
-                        .getConfiguration()),
+                configurationIdMessage(
+                    getOnlyElement(collector.failedTargets.values()).getConfigurationKey()),
                 createAnalysisDetailedExitCode(
                     "in sh_library rule //foo:foo: target '//bar:bar' is not visible from"
                         + " target '//foo:foo'. Check the visibility declaration of the"
@@ -203,15 +198,14 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
     AnalysisResult result = update(eventBus, defaultFlags().with(Flag.KEEP_GOING), "//foo");
     assertThat(result.hasError()).isTrue();
 
-    Label topLevel = Label.parseAbsoluteUnchecked("//foo");
+    Label topLevel = Label.parseCanonicalUnchecked("//foo");
     assertThat(collector.events)
         .valuesForKey(topLevel)
         .containsExactly(
             new AnalysisFailedCause(
                 Label.parseCanonical("//foo"),
-                toId(
-                    Iterables.getOnlyElement(result.getTopLevelTargetsWithConfigs())
-                        .getConfiguration()),
+                configurationIdMessage(
+                    getOnlyElement(collector.failedTargets.values()).getConfigurationKey()),
                 DetailedExitCode.of(
                     FailureDetail.newBuilder()
                         .setMessage(
@@ -237,12 +231,9 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
       // Ignored; we check for the correct eventbus event below.
     }
 
-    Label topLevel = Label.parseAbsoluteUnchecked("//foo");
+    Label topLevel = Label.parseCanonicalUnchecked("//foo");
     BuildConfigurationValue expectedConfig =
-        skyframeExecutor
-            .getSkyframeBuildView()
-            .getBuildConfigurationCollection()
-            .getTargetConfiguration();
+        skyframeExecutor.getSkyframeBuildView().getBuildConfiguration();
     String message =
         "in sh_test rule //foo:foo: target '//bar:bar' is not visible from"
             + " target '//foo:foo'. Check the visibility declaration of the"
@@ -251,7 +242,7 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
         .containsExactly(
             new AnalysisFailedCause(
                 Label.parseCanonical("//foo"),
-                toId(expectedConfig),
+                configurationIdMessage(expectedConfig),
                 createAnalysisDetailedExitCode(message)));
   }
 
@@ -286,6 +277,7 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
   /** Class to collect analysis failures. */
   public static class AnalysisFailureEventCollector {
     private final Multimap<Label, Cause> events = HashMultimap.create();
+    private final HashMap<Label, ConfiguredTargetKey> failedTargets = new HashMap<>();
 
     Multimap<Label, Cause> causesByLabel() {
       Multimap<Label, Cause> result = HashMultimap.create();
@@ -294,7 +286,10 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
 
     @Subscribe
     public void failureEvent(AnalysisFailureEvent event) {
-      events.putAll(event.getFailedTarget().getLabel(), event.getRootCauses().toList());
+      ConfiguredTargetKey failedTarget = event.getFailedTarget();
+      Label label = event.getFailedTarget().getLabel();
+      events.putAll(label, event.getRootCauses().toList());
+      failedTargets.put(label, failedTarget);
     }
   }
 }

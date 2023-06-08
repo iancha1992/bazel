@@ -16,12 +16,12 @@ package com.google.devtools.build.lib.rules.java;
 
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.collect.nestedset.Depset;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.rules.java.JavaInfo.JavaInfoInternalProvider;
 import com.google.devtools.build.lib.starlarkbuildapi.java.JavaAnnotationProcessingApi;
 import java.util.List;
 import java.util.Objects;
@@ -32,7 +32,7 @@ import net.starlark.java.eval.Starlark;
 /** The collection of gen jars from the transitive closure. */
 @Immutable
 public final class JavaGenJarsProvider
-    implements TransitiveInfoProvider, JavaAnnotationProcessingApi<Artifact> {
+    implements JavaInfoInternalProvider, JavaAnnotationProcessingApi<Artifact> {
 
   private final boolean usesAnnotationProcessing;
   @Nullable private final Artifact genClassJar;
@@ -44,7 +44,7 @@ public final class JavaGenJarsProvider
   private final NestedSet<Artifact> transitiveGenClassJars;
   private final NestedSet<Artifact> transitiveGenSourceJars;
 
-  private static final JavaGenJarsProvider EMPTY =
+  static final JavaGenJarsProvider EMPTY =
       new JavaGenJarsProvider(
           /* usesAnnotationProcessing= */ false,
           /* genClassJar= */ null,
@@ -165,7 +165,7 @@ public final class JavaGenJarsProvider
 
   @Override
   public Depset /*<Artifact>*/ getTransitiveGenClassJarsForStarlark() {
-    return Depset.of(Artifact.TYPE, transitiveGenClassJars);
+    return Depset.of(Artifact.class, transitiveGenClassJars);
   }
 
   NestedSet<Artifact> getTransitiveGenClassJars() {
@@ -174,7 +174,7 @@ public final class JavaGenJarsProvider
 
   @Override
   public Depset /*<Artifact>*/ getTransitiveGenSourceJarsForStarlark() {
-    return Depset.of(Artifact.TYPE, transitiveGenSourceJars);
+    return Depset.of(Artifact.class, transitiveGenSourceJars);
   }
 
   NestedSet<Artifact> getTransitiveGenSourceJars() {
@@ -183,7 +183,7 @@ public final class JavaGenJarsProvider
 
   @Override
   public Depset /*<Artifact>*/ getProcessorClasspathForStarlark() {
-    return Depset.of(Artifact.TYPE, processorClasspath);
+    return Depset.of(Artifact.class, processorClasspath);
   }
 
   NestedSet<Artifact> getProcessorClasspath() {

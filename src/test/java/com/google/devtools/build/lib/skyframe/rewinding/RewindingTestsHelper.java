@@ -33,7 +33,6 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSetMultimap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Multimap;
-import com.google.common.eventbus.Subscribe;
 import com.google.common.util.concurrent.Uninterruptibles;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
@@ -49,15 +48,14 @@ import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.analysis.config.CoreOptions;
 import com.google.devtools.build.lib.bugreport.BugReporter;
-import com.google.devtools.build.lib.buildtool.buildevent.BuildStartingEvent;
 import com.google.devtools.build.lib.buildtool.util.BuildIntegrationTestCase;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.collect.nestedset.ArtifactNestedSetKey;
 import com.google.devtools.build.lib.exec.SpawnExecException;
 import com.google.devtools.build.lib.runtime.KeepGoingOption;
 import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.Spawn.Code;
-import com.google.devtools.build.lib.skyframe.ArtifactNestedSetKey;
 import com.google.devtools.build.lib.testutil.ActionEventRecorder;
 import com.google.devtools.build.lib.testutil.ActionEventRecorder.ActionRewindEventAsserter;
 import com.google.devtools.build.lib.testutil.ControllableActionStrategyModule;
@@ -76,7 +74,6 @@ import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.TrackingAwaiter;
 import com.google.devtools.build.skyframe.proto.GraphInconsistency.Inconsistency;
 import com.google.errorprone.annotations.ForOverride;
-import com.google.errorprone.annotations.Keep;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -200,7 +197,7 @@ public class RewindingTestsHelper {
 
   private String getHexDigest(ActionInput input, ActionExecutionContext context)
       throws IOException {
-    return toHex(context.getMetadataProvider().getMetadata(input).getDigest());
+    return toHex(context.getInputMetadataProvider().getInputMetadata(input).getDigest());
   }
 
   static ActionInputDepOwners getInputOwners(Multimap<ActionInput, Artifact> mappings) {
@@ -210,12 +207,13 @@ public class RewindingTestsHelper {
   }
 
   public final List<SkyKey> collectOrderedDirtiedKeys() {
-    return collectOrderedDirtiedKeys(/*exactNestedSets=*/ false);
+    return collectOrderedDirtiedKeys(/* exactNestedSets= */ false);
   }
 
   final List<SkyKey> collectOrderedDirtiedKeys(boolean exactNestedSets) {
     List<SkyKey> dirtiedKeys = new ArrayList<>();
-    injectListenerAtStartOfNextBuild(collectOrderedDirtyKeysListener(dirtiedKeys, exactNestedSets));
+    testCase.injectListenerAtStartOfNextBuild(
+        collectOrderedDirtyKeysListener(dirtiedKeys, exactNestedSets));
     return dirtiedKeys;
   }
 
@@ -251,36 +249,6 @@ public class RewindingTestsHelper {
         }
       }
     };
-  }
-
-  /**
-   * Lazily injects the given listener at the start of the next build.
-   *
-   * <p>Injecting the listener immediately would reach the <em>current</em> evaluator, but the next
-   * build may create a new evaluator, which happens when {@link
-   * com.google.devtools.build.lib.skyframe.SequencedSkyframeExecutor} is not tracking incremental
-   * state.
-   */
-  private void injectListenerAtStartOfNextBuild(NotifyingHelper.Listener listener) {
-    testCase
-        .getRuntimeWrapper()
-        .registerSubscriber(
-            new Object() {
-              private boolean injected = false;
-
-              @Subscribe
-              @Keep
-              void buildStarting(@SuppressWarnings("unused") BuildStartingEvent event) {
-                if (!injected) {
-                  testCase
-                      .getSkyframeExecutor()
-                      .getEvaluator()
-                      .injectGraphTransformerForTesting(
-                          NotifyingHelper.makeNotifyingTransformer(listener));
-                  injected = true;
-                }
-              }
-            });
   }
 
   static void assertOnlyActionsDirtied(List<SkyKey> dirtiedKeys) {
@@ -374,12 +342,12 @@ public class RewindingTestsHelper {
         .inOrder();
 
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of(
+        /* runOnce= */ ImmutableList.of(
             "Executing genrule //test:rule1", "Executing genrule //test:rule2"),
-        /*completedRewound=*/ ImmutableList.of(),
-        /*failedRewound=*/ ImmutableList.of(),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(0));
+        /* completedRewound= */ ImmutableList.of(),
+        /* failedRewound= */ ImmutableList.of(),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(),
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(0));
 
     assertThat(dirtiedKeys).isEmpty();
   }
@@ -396,12 +364,12 @@ public class RewindingTestsHelper {
         "foo/BUILD",
         "genrule(name = 'top', outs = ['top.out'], srcs = [':dep'], cmd = 'cp $< $@')",
         "genrule(name = 'dep', outs = ['dep.out'], cmd = 'touch $@')");
-    injectListenerAtStartOfNextBuild(
+    testCase.injectListenerAtStartOfNextBuild(
         (key, type, order, context) -> {
           if (type == EventType.GET_BATCH
               && order == Order.BEFORE
               && context == Reason.PREFETCH
-              && isActionExecutionKey(key, Label.parseAbsoluteUnchecked("//foo:dep"))) {
+              && isActionExecutionKey(key, Label.parseCanonicalUnchecked("//foo:dep"))) {
             try {
               testCase
                   .getSkyframeExecutor()
@@ -485,12 +453,12 @@ public class RewindingTestsHelper {
             "Executing genrule //test:consume_output");
 
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of(),
-        /*completedRewound=*/ ImmutableList.of(
+        /* runOnce= */ ImmutableList.of(),
+        /* completedRewound= */ ImmutableList.of(
             "Executing genrule //test:rule1_1", "Executing genrule //test:rule1_2"),
-        /*failedRewound=*/ ImmutableList.of("Executing genrule //test:rule2"),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(2));
+        /* failedRewound= */ ImmutableList.of("Executing genrule //test:rule2"),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(),
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(2));
 
     assertOnlyActionsDirtied(dirtiedKeys);
     assertThat(dirtiedArtifactOwnerLabels(dirtiedKeys))
@@ -537,9 +505,9 @@ public class RewindingTestsHelper {
     CountDownLatch looseHeaderDepDeclared = new CountDownLatch(1);
     CountDownLatch gensrcRestarted = new CountDownLatch(1);
     CountDownLatch cppRestarted = new CountDownLatch(1);
-    Label cppLabel = Label.parseAbsoluteUnchecked("//test:loser");
-    Label gensrcLabel = Label.parseAbsoluteUnchecked("//test:gensrc");
-    injectListenerAtStartOfNextBuild(
+    Label cppLabel = Label.parseCanonicalUnchecked("//test:loser");
+    Label gensrcLabel = Label.parseCanonicalUnchecked("//test:gensrc");
+    testCase.injectListenerAtStartOfNextBuild(
         (key, type, order, context) -> {
           if (EventType.ADD_REVERSE_DEP.equals(type)
               && isActionExecutionKey(context, cppLabel)
@@ -609,11 +577,11 @@ public class RewindingTestsHelper {
         .inOrder();
 
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of(),
-        /*completedRewound=*/ ImmutableList.of("Executing genrule //test:gensrc"),
-        /*failedRewound=*/ ImmutableList.of("Executing genrule //test:restarter"),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(1));
+        /* runOnce= */ ImmutableList.of(),
+        /* completedRewound= */ ImmutableList.of("Executing genrule //test:gensrc"),
+        /* failedRewound= */ ImmutableList.of("Executing genrule //test:restarter"),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(),
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(1));
 
     // TODO(b/228090759): Verify that deps are correct (see assertion that used to be here).
 
@@ -676,11 +644,11 @@ public class RewindingTestsHelper {
             "Executing genrule //test:consume_output");
 
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of(),
-        /*completedRewound=*/ ImmutableList.of("Executing genrule //test:rule1"),
-        /*failedRewound=*/ ImmutableList.of("Executing genrule //test:rule2"),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(0, 1));
+        /* runOnce= */ ImmutableList.of(),
+        /* completedRewound= */ ImmutableList.of("Executing genrule //test:rule1"),
+        /* failedRewound= */ ImmutableList.of("Executing genrule //test:rule2"),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(),
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(0, 1));
 
     assertOnlyActionsDirtied(dirtiedKeys);
     assertThat(dirtiedArtifactOwnerLabels(dirtiedKeys)).containsExactly("//test:rule1");
@@ -734,14 +702,14 @@ public class RewindingTestsHelper {
         .inOrder();
 
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of(),
-        /*completedRewound=*/ ImmutableList.of("Executing genrule //test:rule1"),
-        /*failedRewound=*/ ImmutableList.of(),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(),
-        /*expectResultReceivedForFailedRewound=*/ false,
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(
+        /* runOnce= */ ImmutableList.of(),
+        /* completedRewound= */ ImmutableList.of("Executing genrule //test:rule1"),
+        /* failedRewound= */ ImmutableList.of(),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(),
+        /* expectResultReceivedForFailedRewound= */ false,
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(
             ActionRewindStrategy.MAX_REPEATED_LOST_INPUTS + 1),
-        /*lostInputAndActionsPosts=*/ ImmutableList.of(
+        /* lostInputAndActionsPosts= */ ImmutableList.of(
             ImmutableList.copyOf(
                 Collections.nCopies(
                     // 3 invalidated nodes:
@@ -815,7 +783,7 @@ public class RewindingTestsHelper {
    */
   public final void runMultipleLostInputsForRewindPlan() throws Exception {
     if (!supportsConcurrentRewinding()) {
-      testCase.addOptions("--jobs=1");
+      testCase.addOptions("--jobs=1", "--experimental_use_semaphore_for_jobs");
     }
     writeNGenrulePackages(ActionRewindStrategy.MAX_ACTION_REWIND_EVENTS + 1);
     for (int i = 1; i <= ActionRewindStrategy.MAX_ACTION_REWIND_EVENTS + 1; i++) {
@@ -844,8 +812,8 @@ public class RewindingTestsHelper {
         "//test:consume_6");
     assertOnlyActionsDirtied(dirtiedKeys);
     recorder.assertRewindActionStats(
-        /*totalLostInputCounts=*/ ImmutableList.of(21),
-        /*lostInputAndActionsPosts=*/ ImmutableList.of(
+        /* totalLostInputCounts= */ ImmutableList.of(21),
+        /* lostInputAndActionsPosts= */ ImmutableList.of(
             ImmutableList.of(
                 // All invalidated node counts are len(srcs) + 2 (+1 for the failed action itself,
                 // and +1 for the ArtifactNestedSet node for [srcs] in
@@ -898,11 +866,11 @@ public class RewindingTestsHelper {
         .inOrder();
 
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of("Executing genrule //test:rule1"),
-        /*completedRewound=*/ ImmutableList.of(),
-        /*failedRewound=*/ ImmutableList.of(),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(1));
+        /* runOnce= */ ImmutableList.of("Executing genrule //test:rule1"),
+        /* completedRewound= */ ImmutableList.of(),
+        /* failedRewound= */ ImmutableList.of(),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(),
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(1));
     assertThat(
             recorder.getActionStartedEvents().stream()
                 .map(e -> ActionEventRecorder.progressMessageOrPrettyPrint(e.getAction()))
@@ -965,8 +933,8 @@ public class RewindingTestsHelper {
                       new SpawnExecException(
                           "kaboom",
                           FAILED_RESULT,
-                          /*forciblyRunRemotely=*/ false,
-                          /*catastrophe=*/ false)));
+                          /* forciblyRunRemotely= */ false,
+                          /* catastrophe= */ false)));
 
           ImmutableList<ActionInput> lostInputs =
               ImmutableList.of(SpawnInputUtils.getInputWithName(spawn, "intermediate.txt"));
@@ -1047,11 +1015,11 @@ public class RewindingTestsHelper {
         .inOrder();
 
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of("Executing genrule //test:rule1"),
-        /*completedRewound=*/ ImmutableList.of("Executing genrule //test:rule2"),
-        /*failedRewound=*/ ImmutableList.of("Executing genrule //test:rule3"),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(1));
+        /* runOnce= */ ImmutableList.of("Executing genrule //test:rule1"),
+        /* completedRewound= */ ImmutableList.of("Executing genrule //test:rule2"),
+        /* failedRewound= */ ImmutableList.of("Executing genrule //test:rule3"),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(),
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(1));
 
     assertOnlyActionsDirtied(dirtiedKeys);
     assertThat(dirtiedArtifactOwnerLabels(dirtiedKeys)).containsExactly("//test:rule2");
@@ -1125,12 +1093,12 @@ public class RewindingTestsHelper {
         .inOrder();
 
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of(),
-        /*completedRewound=*/ ImmutableList.of(
+        /* runOnce= */ ImmutableList.of(),
+        /* completedRewound= */ ImmutableList.of(
             "Executing genrule //test:rule1", "Executing genrule //test:rule2"),
-        /*failedRewound=*/ ImmutableList.of("Executing genrule //test:rule3"),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(2));
+        /* failedRewound= */ ImmutableList.of("Executing genrule //test:rule3"),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(),
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(2));
 
     assertOnlyActionsDirtied(dirtiedKeys);
     assertThat(dirtiedArtifactOwnerLabels(dirtiedKeys))
@@ -1214,11 +1182,11 @@ public class RewindingTestsHelper {
         .inOrder();
 
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of("Executing genrule //test:rule3"),
-        /*completedRewound=*/ ImmutableList.of("Executing genrule //test:rule1"),
-        /*failedRewound=*/ ImmutableList.of("Executing genrule //test:rule2"),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(1));
+        /* runOnce= */ ImmutableList.of("Executing genrule //test:rule3"),
+        /* completedRewound= */ ImmutableList.of("Executing genrule //test:rule1"),
+        /* failedRewound= */ ImmutableList.of("Executing genrule //test:rule2"),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(),
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(1));
 
     assertOnlyActionsDirtied(dirtiedKeys);
     assertThat(dirtiedArtifactOwnerLabels(dirtiedKeys)).containsExactly("//test:rule1");
@@ -1383,7 +1351,7 @@ public class RewindingTestsHelper {
     AtomicInteger shared2ADirtied = new AtomicInteger(0);
     AtomicInteger shared2AReady = new AtomicInteger(0);
     AtomicInteger shared2BReady = new AtomicInteger(0);
-    injectListenerAtStartOfNextBuild(
+    testCase.injectListenerAtStartOfNextBuild(
         (key, type, order, context) -> {
           // Count the times shared_1{A,B} are dirtied.
           if (type.equals(NotifyingHelper.EventType.MARK_DIRTY) && order.equals(Order.AFTER)) {
@@ -1570,17 +1538,17 @@ public class RewindingTestsHelper {
     // Rules like cc_library depend on middleman inputs which are part of the toolchain, but none
     // are involved in rewinding.
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of(
+        /* runOnce= */ ImmutableList.of(
             "Compiling tree/make_cc_dir.cc/file2.cc",
             "Linking tree/libconsumes_tree.so",
             "Linking tree/libconsumes_tree.a"),
-        /*completedRewound=*/ ImmutableList.of("Action tree/make_cc_dir.cc"),
-        /*failedRewound=*/ ImmutableList.of("Compiling tree/make_cc_dir.cc/file1.cc"),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(1));
+        /* completedRewound= */ ImmutableList.of("Action tree/make_cc_dir.cc"),
+        /* failedRewound= */ ImmutableList.of("Compiling tree/make_cc_dir.cc/file1.cc"),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(),
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(1));
 
     assertThat(dirtiedKeys).hasSize(1);
-    assertActionKey(dirtiedKeys.get(0), "//tree:make_cc", /*index=*/ 0);
+    assertActionKey(dirtiedKeys.get(0), "//tree:make_cc", /* index= */ 0);
   }
 
   public final void runTreeArtifactRewound_allFilesLost_spawnFailed() throws Exception {
@@ -1680,13 +1648,14 @@ public class RewindingTestsHelper {
     // Rules like cc_library depend on middleman inputs which are part of the toolchain, but none
     // are involved in rewinding.
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of(
+        /* runOnce= */ ImmutableList.of(
             "Action tree/make_cc_dir.cc", "Linking tree/libconsumes_tree.a"),
-        /*completedRewound=*/ ImmutableList.of(
+        /* completedRewound= */ ImmutableList.of(
             "Compiling tree/make_cc_dir.cc/file1.cc", "Compiling tree/make_cc_dir.cc/file2.cc"),
-        /*failedRewound=*/ ImmutableList.of("Linking tree/libconsumes_tree.so"),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(lostTreeFileArtifactNames.size()));
+        /* failedRewound= */ ImmutableList.of("Linking tree/libconsumes_tree.so"),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(),
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(
+            lostTreeFileArtifactNames.size()));
 
     assertThat(dirtiedKeys).hasSize(3);
     HashSet<Integer> treeActionIndices = new HashSet<>(ImmutableList.of(0, 1));
@@ -1781,16 +1750,16 @@ public class RewindingTestsHelper {
             "Executing genrule //middle:tool_user");
 
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of(),
-        /*completedRewound=*/ ImmutableList.of(
+        /* runOnce= */ ImmutableList.of(),
+        /* completedRewound= */ ImmutableList.of(
             "Executing genrule //middle:gen1 [for tool]",
             "Executing genrule //middle:gen2 [for tool]"),
-        /*failedRewound=*/ ImmutableList.of("Executing genrule //middle:tool_user"),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(
+        /* failedRewound= */ ImmutableList.of("Executing genrule //middle:tool_user"),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(
             middlemanEvent ->
                 ActionEventRecorder.progressMessageOrPrettyPrint(middlemanEvent.getAction())
                     .equals("runfiles for //middle:tool")),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(lostRunfiles.size()));
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(lostRunfiles.size()));
 
     if (buildRunfileManifests()) {
       assertThat(dirtiedKeys).hasSize(7);
@@ -1818,7 +1787,7 @@ public class RewindingTestsHelper {
         }
       }
 
-      assertActionKey(dirtiedKeys.get(i++), "//middle:tool", /*index=*/ 3);
+      assertActionKey(dirtiedKeys.get(i++), "//middle:tool", /* index= */ 3);
       assertArtifactKey(dirtiedKeys.get(i), "_middlemen/middle_Stool-runfiles");
     } else {
       assertThat(dirtiedKeys).hasSize(5);
@@ -1837,7 +1806,7 @@ public class RewindingTestsHelper {
         }
       }
 
-      assertActionKey(dirtiedKeys.get(i++), "//middle:tool", /*index=*/ 1);
+      assertActionKey(dirtiedKeys.get(i++), "//middle:tool", /* index= */ 1);
       assertArtifactKey(dirtiedKeys.get(i), "_middlemen/middle_Stool-runfiles");
     }
   }
@@ -1946,14 +1915,14 @@ public class RewindingTestsHelper {
         .inOrder();
 
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of("Executing genrule //test:rule3"),
-        /*completedRewound=*/ ImmutableList.of("Executing genrule //test:rule1 [for tool]"),
-        /*failedRewound=*/ ImmutableList.of("Executing genrule //test:rule2"),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(
+        /* runOnce= */ ImmutableList.of("Executing genrule //test:rule3"),
+        /* completedRewound= */ ImmutableList.of("Executing genrule //test:rule1 [for tool]"),
+        /* failedRewound= */ ImmutableList.of("Executing genrule //test:rule2"),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(
             middlemanEvent ->
                 ActionEventRecorder.progressMessageOrPrettyPrint(middlemanEvent.getAction())
                     .equals("runfiles for //test:tool")),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(1));
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(1));
 
     if (buildRunfileManifests()) {
       assertThat(dirtiedKeys).hasSize(6);
@@ -1968,7 +1937,7 @@ public class RewindingTestsHelper {
             case 0: // SymlinkAction
               break;
             case 1: // SourceManifestAction
-              assertActionKey(dirtiedKeys.get(i), "//test:tool", /*index=*/ 2);
+              assertActionKey(dirtiedKeys.get(i), "//test:tool", /* index= */ 2);
               i++;
               break;
             default:
@@ -1982,7 +1951,7 @@ public class RewindingTestsHelper {
         }
       }
 
-      assertActionKey(dirtiedKeys.get(i++), "//test:tool", /*index=*/ 3);
+      assertActionKey(dirtiedKeys.get(i++), "//test:tool", /* index= */ 3);
       assertArtifactKey(dirtiedKeys.get(i), "_middlemen/test_Stool-runfiles");
     } else {
       assertThat(dirtiedKeys).hasSize(4);
@@ -1999,7 +1968,7 @@ public class RewindingTestsHelper {
         }
       }
 
-      assertActionKey(dirtiedKeys.get(i++), "//test:tool", /*index=*/ 1);
+      assertActionKey(dirtiedKeys.get(i++), "//test:tool", /* index= */ 1);
       assertArtifactKey(dirtiedKeys.get(i), "_middlemen/test_Stool-runfiles");
     }
   }
@@ -2082,14 +2051,14 @@ public class RewindingTestsHelper {
         .inOrder();
 
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of(),
-        /*completedRewound=*/ ImmutableList.of("Action middle/gen_tree_dir [for tool]"),
-        /*failedRewound=*/ ImmutableList.of("Executing genrule //middle:tool_user"),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(
+        /* runOnce= */ ImmutableList.of(),
+        /* completedRewound= */ ImmutableList.of("Action middle/gen_tree_dir [for tool]"),
+        /* failedRewound= */ ImmutableList.of("Executing genrule //middle:tool_user"),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(
             middlemanEvent ->
                 ActionEventRecorder.progressMessageOrPrettyPrint(middlemanEvent.getAction())
                     .equals("runfiles for //middle:tool")),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(2));
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(2));
 
     if (buildRunfileManifests()) {
       assertThat(dirtiedKeys).hasSize(7);
@@ -2117,7 +2086,7 @@ public class RewindingTestsHelper {
         }
       }
 
-      assertActionKey(dirtiedKeys.get(i++), "//middle:tool", /*index=*/ 3);
+      assertActionKey(dirtiedKeys.get(i++), "//middle:tool", /* index= */ 3);
       assertArtifactKey(dirtiedKeys.get(i), "_middlemen/middle_Stool-runfiles");
     } else {
       assertThat(dirtiedKeys).hasSize(5);
@@ -2136,7 +2105,7 @@ public class RewindingTestsHelper {
         }
       }
 
-      assertActionKey(dirtiedKeys.get(i++), "//middle:tool", /*index=*/ 1);
+      assertActionKey(dirtiedKeys.get(i++), "//middle:tool", /* index= */ 1);
       assertArtifactKey(dirtiedKeys.get(i), "_middlemen/middle_Stool-runfiles");
     }
   }
@@ -2198,11 +2167,11 @@ public class RewindingTestsHelper {
             "Running consumer")
         .inOrder();
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of(),
-        /*completedRewound=*/ ImmutableList.of("Executing genrule //test:gen"),
-        /*failedRewound=*/ ImmutableList.of("Running consumer"),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(1));
+        /* runOnce= */ ImmutableList.of(),
+        /* completedRewound= */ ImmutableList.of("Executing genrule //test:gen"),
+        /* failedRewound= */ ImmutableList.of("Running consumer"),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(),
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(1));
   }
 
   private static void writeGeneratedHeaderDirectDepPackage(BuildIntegrationTestCase testCase)
@@ -2274,15 +2243,15 @@ public class RewindingTestsHelper {
     // Input discovery actions do not result in action lifecycle events. E.g., the "Extracting
     // [...]" action is run, but results in no ActionStartedEvent/ActionCompletionEvent/etc.
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of(
+        /* runOnce= */ ImmutableList.of(
             "Linking genheader/consumes_header", "Compiling genheader/consumes.cc"),
-        /*completedRewound=*/ ImmutableList.of("Executing genrule //genheader:gen_header"),
-        /*failedRewound=*/ ImmutableList.of(),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(
+        /* completedRewound= */ ImmutableList.of("Executing genrule //genheader:gen_header"),
+        /* failedRewound= */ ImmutableList.of(),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(
             middlemanEvent ->
                 isSchedulingDepMiddlemanForTarget(
                     middlemanEvent.getAction(), "//genheader:consumes_header")),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(1));
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(1));
 
     assertOnlyActionsDirtied(dirtiedKeys);
     assertThat(dirtiedArtifactOwnerLabels(dirtiedKeys)).containsExactly("//genheader:gen_header");
@@ -2334,14 +2303,14 @@ public class RewindingTestsHelper {
             "Linking genheader/consumes_header");
 
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of("Linking genheader/consumes_header"),
-        /*completedRewound=*/ ImmutableList.of("Executing genrule //genheader:gen_header"),
-        /*failedRewound=*/ ImmutableList.of("Compiling genheader/consumes.cc"),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(
+        /* runOnce= */ ImmutableList.of("Linking genheader/consumes_header"),
+        /* completedRewound= */ ImmutableList.of("Executing genrule //genheader:gen_header"),
+        /* failedRewound= */ ImmutableList.of("Compiling genheader/consumes.cc"),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(
             middlemanEvent ->
                 isSchedulingDepMiddlemanForTarget(
                     middlemanEvent.getAction(), "//genheader:consumes_header")),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(1));
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(1));
 
     assertOnlyActionsDirtied(dirtiedKeys);
     assertThat(dirtiedArtifactOwnerLabels(dirtiedKeys)).containsExactly("//genheader:gen_header");
@@ -2432,20 +2401,20 @@ public class RewindingTestsHelper {
     // Input discovery actions do not result in action lifecycle events. E.g., the "Extracting
     // [...]" action is run, but results in no ActionStartedEvent/ActionCompletionEvent/etc.
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of(
+        /* runOnce= */ ImmutableList.of(
             "Compiling genheader/intermediate.cc",
             "Compiling genheader/consumes.cc",
             "Linking genheader/consumes_header"),
-        /*completedRewound=*/ ImmutableList.of("Executing genrule //genheader:gen_header"),
-        /*failedRewound=*/ ImmutableList.of(),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(
+        /* completedRewound= */ ImmutableList.of("Executing genrule //genheader:gen_header"),
+        /* failedRewound= */ ImmutableList.of(),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(
             middlemanEvent ->
                 isSchedulingDepMiddlemanForTarget(
                     middlemanEvent.getAction(), "//genheader:consumes_header"),
             middlemanEvent ->
                 isSchedulingDepMiddlemanForTarget(
                     middlemanEvent.getAction(), "//genheader:intermediate")),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(1));
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(1));
 
     assertOnlyActionsDirtied(dirtiedKeys);
     assertThat(dirtiedArtifactOwnerLabels(dirtiedKeys)).containsExactly("//genheader:gen_header");
@@ -2498,18 +2467,18 @@ public class RewindingTestsHelper {
             "Linking genheader/consumes_header");
 
     recorder.assertEvents(
-        /*runOnce=*/ ImmutableList.of(
+        /* runOnce= */ ImmutableList.of(
             "Linking genheader/consumes_header", "Compiling genheader/intermediate.cc"),
-        /*completedRewound=*/ ImmutableList.of("Executing genrule //genheader:gen_header"),
-        /*failedRewound=*/ ImmutableList.of("Compiling genheader/consumes.cc"),
-        /*exactlyOneMiddlemanEventChecks=*/ ImmutableList.of(
+        /* completedRewound= */ ImmutableList.of("Executing genrule //genheader:gen_header"),
+        /* failedRewound= */ ImmutableList.of("Compiling genheader/consumes.cc"),
+        /* exactlyOneMiddlemanEventChecks= */ ImmutableList.of(
             middlemanEvent ->
                 isSchedulingDepMiddlemanForTarget(
                     middlemanEvent.getAction(), "//genheader:consumes_header"),
             middlemanEvent ->
                 isSchedulingDepMiddlemanForTarget(
                     middlemanEvent.getAction(), "//genheader:intermediate")),
-        /*actionRewindingPostLostInputCounts=*/ ImmutableList.of(1));
+        /* actionRewindingPostLostInputCounts= */ ImmutableList.of(1));
 
     assertOnlyActionsDirtied(dirtiedKeys);
     assertThat(dirtiedArtifactOwnerLabels(dirtiedKeys)).containsExactly("//genheader:gen_header");
@@ -2542,8 +2511,8 @@ public class RewindingTestsHelper {
     CountDownLatch depDone = new CountDownLatch(1);
     CountDownLatch failExecuting = new CountDownLatch(1);
     CountDownLatch depRewound = new CountDownLatch(1);
-    Label fail = Label.parseAbsoluteUnchecked("//foo:fail");
-    Label dep = Label.parseAbsoluteUnchecked("//foo:dep");
+    Label fail = Label.parseCanonicalUnchecked("//foo:fail");
+    Label dep = Label.parseCanonicalUnchecked("//foo:dep");
     addSpawnShim(
         "Executing genrule //foo:fail",
         (spawn, context) -> {
@@ -2558,7 +2527,7 @@ public class RewindingTestsHelper {
           return createLostInputsExecException(
               context, lostInputs, new ActionInputDepOwnerMap(lostInputs));
         });
-    injectListenerAtStartOfNextBuild(
+    testCase.injectListenerAtStartOfNextBuild(
         (key, type, order, context) -> {
           if (isActionExecutionKey(key, fail) && type == EventType.CREATE_IF_ABSENT) {
             awaitUninterruptibly(depDone);

@@ -33,11 +33,6 @@ public class ExecGroupSubject extends Subject {
     return assertAbout(ExecGroupSubject::new).that(execGroup);
   }
 
-  /** Static method for getting the subject factory (for use with assertAbout()). */
-  public static Subject.Factory<ExecGroupSubject, ExecGroup> execGroups() {
-    return ExecGroupSubject::new;
-  }
-
   // Instance fields.
 
   private final ExecGroup actual;
@@ -52,7 +47,7 @@ public class ExecGroupSubject extends Subject {
   }
 
   public ToolchainTypeRequirementSubject toolchainType(String toolchainTypeLabel) {
-    return toolchainType(Label.parseAbsoluteUnchecked(toolchainTypeLabel));
+    return toolchainType(Label.parseCanonicalUnchecked(toolchainTypeLabel));
   }
 
   public ToolchainTypeRequirementSubject toolchainType(Label toolchainType) {
@@ -75,7 +70,7 @@ public class ExecGroupSubject extends Subject {
   }
 
   public void hasExecCompatibleWith(String constraintLabel) {
-    hasExecCompatibleWith(Label.parseAbsoluteUnchecked(constraintLabel));
+    hasExecCompatibleWith(Label.parseCanonicalUnchecked(constraintLabel));
   }
 
   public void hasExecCompatibleWith(Label constraintLabel) {

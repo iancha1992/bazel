@@ -22,7 +22,6 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
 import com.google.devtools.build.lib.actions.Actions;
-import com.google.devtools.build.lib.actions.Actions.GeneratingActions;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.config.CoreOptions;
@@ -52,7 +51,6 @@ import com.google.devtools.build.lib.packages.Attribute;
 import com.google.devtools.build.lib.packages.BuildSetting;
 import com.google.devtools.build.lib.packages.Info;
 import com.google.devtools.build.lib.packages.Provider;
-import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.TargetUtils;
 import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.packages.Type.LabelClass;
@@ -128,9 +126,9 @@ public final class RuleConfiguredTargetBuilder {
     }
     NestedSet<Artifact> runfilesMiddlemen = runfilesMiddlemenBuilder.build();
     FilesToRunProvider filesToRunProvider =
-        new FilesToRunProvider(
+        FilesToRunProvider.create(
             buildFilesToRun(runfilesMiddlemen, filesToBuild), runfilesSupport, executable);
-    addProvider(new FileProvider(filesToBuild));
+    addProvider(FileProvider.of(filesToBuild));
     addProvider(filesToRunProvider);
 
     if (runfilesSupport != null) {
@@ -209,7 +207,7 @@ public final class RuleConfiguredTargetBuilder {
 
     if (ruleContext.getRule().hasAnalysisTestTransition()) {
       NestedSet<Label> labels = transitiveLabels();
-      int depCount = labels.toList().size();
+      int depCount = labels.memoizedFlattenAndGetSize();
       if (depCount > ruleContext.getConfiguration().analysisTestingDepsLimit()) {
         ruleContext.ruleError(
             String.format(
@@ -257,23 +255,15 @@ public final class RuleConfiguredTargetBuilder {
     }
 
     AnalysisEnvironment analysisEnvironment = ruleContext.getAnalysisEnvironment();
-    GeneratingActions generatingActions = null;
+    ImmutableList<ActionAnalysisMetadata> actions = analysisEnvironment.getRegisteredActions();
     try {
-      generatingActions =
-          Actions.assignOwnersAndFilterSharedActionsAndThrowActionConflict(
-              analysisEnvironment.getActionKeyContext(),
-              analysisEnvironment.getRegisteredActions(),
-              ruleContext.getOwner(),
-              ((Rule) ruleContext.getTarget()).getOutputFiles());
+      Actions.assignOwnersAndThrowIfConflictToleratingSharedActions(
+          analysisEnvironment.getActionKeyContext(), actions, ruleContext.getOwner());
     } catch (Actions.ArtifactGeneratedByOtherRuleException e) {
       ruleContext.ruleError(e.getMessage());
       return null;
     }
-    return new RuleConfiguredTarget(
-        ruleContext,
-        providers,
-        generatingActions.getActions(),
-        generatingActions.getArtifactsByOutputLabel());
+    return new RuleConfiguredTarget(ruleContext, providers, actions);
   }
 
   private boolean propagateValidationActionOutputGroup() {
@@ -312,14 +302,19 @@ public final class RuleConfiguredTargetBuilder {
   /**
    * Adds {@link RequiredConfigFragmentsProvider} if {@link
    * CoreOptions#includeRequiredConfigFragmentsProvider} isn't {@link
-   * CoreOptions.IncludeConfigFragmentsEnum#OFF}.
+   * CoreOptions.IncludeConfigFragmentsEnum#OFF} and if the provider is not already present.
+   *
+   * <p>For Stalark rules the provider is already added in {@link
+   * com.google.devtools.build.lib.analysis.starlark.StarlarkRuleConfiguredTargetUtil}.
    *
    * <p>See {@link com.google.devtools.build.lib.analysis.config.RequiredFragmentsUtil} for a
    * description of the meaning of this provider's content. That class contains methods that
    * populate the results of {@link RuleContext#getRequiredConfigFragments}.
    */
+  // TODO(blaze-team): Simplify the conditional logic and make it easier to understand.
   private void maybeAddRequiredConfigFragmentsProvider() {
-    if (ruleContext.shouldIncludeRequiredConfigFragmentsProvider()) {
+    if (ruleContext.shouldIncludeRequiredConfigFragmentsProvider()
+        && !providersBuilder.contains(RequiredConfigFragmentsProvider.class)) {
       addProvider(ruleContext.getRequiredConfigFragments());
     }
   }

@@ -27,6 +27,7 @@ import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.analysis.AnalysisUtils;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.OutputGroupInfo;
+import com.google.devtools.build.lib.analysis.RunEnvironmentInfo;
 import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget;
 import com.google.devtools.build.lib.analysis.util.AnalysisMock;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
@@ -188,7 +189,7 @@ public class CcCommonTest extends BuildViewTestCase {
   private Iterable<Artifact> getLinkerInputs(ConfiguredTarget target) {
     Artifact executable = getExecutable(target);
     CppLinkAction linkAction = (CppLinkAction) getGeneratingAction(executable);
-    return linkAction.getLinkCommandLine().getLinkerInputArtifacts().toList();
+    return linkAction.getLinkCommandLineForTesting().getLinkerInputArtifacts().toList();
   }
 
   @Test
@@ -202,7 +203,7 @@ public class CcCommonTest extends BuildViewTestCase {
 
     Artifact executable = getExecutable(archiveInSrcsTest);
     CppLinkAction linkAction = (CppLinkAction) getGeneratingAction(executable);
-    assertThat(linkAction.getLinkCommandLine().toString()).contains(" -larchive.34 ");
+    assertThat(linkAction.getLinkCommandLineForTesting().toString()).contains(" -larchive.34 ");
   }
 
   @Test
@@ -282,6 +283,24 @@ public class CcCommonTest extends BuildViewTestCase {
             "           defines = ['FOO=$(location //data)'])");
     assertThat(expandedDefines.get(CcInfo.PROVIDER).getCcCompilationContext().getDefines())
         .containsExactly("FOO=data/data.txt");
+  }
+
+  @Test
+  public void testExpandedDefinesDuplicateTargets() throws Exception {
+    scratch.file("data/BUILD", "cc_library(name = 'a', srcs = ['foo.cc'])");
+    ConfiguredTarget expandedDefines =
+        scratchConfiguredTarget(
+            "expanded_defines",
+            "expand_srcs",
+            "cc_library(name = 'expand_srcs',",
+            "           srcs = ['defines.cc'],",
+            "           data = ['//data:a'],",
+            "           deps = ['//data:a'],",
+            "           defines = ['FOO=$(location //data:a)'])");
+    String depPath =
+        getFilesToBuild(getConfiguredTarget("//data:a")).getSingleton().getExecPathString();
+    assertThat(expandedDefines.get(CcInfo.PROVIDER).getCcCompilationContext().getDefines())
+        .containsExactly(String.format("FOO=%s", depPath));
   }
 
   @Test
@@ -690,13 +709,13 @@ public class CcCommonTest extends BuildViewTestCase {
 
   @Test
   public void testCcLibraryWithDashStaticOnDarwin() throws Exception {
-    getAnalysisMock().ccSupport().setupCcToolchainConfigForCpu(mockToolsConfig, "darwin");
-    useConfiguration("--cpu=darwin");
+    getAnalysisMock().ccSupport().setupCcToolchainConfigForCpu(mockToolsConfig, "darwin_x86_64");
+    useConfiguration("--cpu=darwin_x86_64");
     checkError(
         "badlib",
         "lib_with_dash_static",
         // message:
-        "in linkopts attribute of cc_library rule //badlib:lib_with_dash_static: "
+        "in linkopts attribute of cc_library rule @//badlib:lib_with_dash_static: "
             + "Apple builds do not support statically linked binaries",
         // build file:
         "cc_library(name = 'lib_with_dash_static',",
@@ -799,7 +818,7 @@ public class CcCommonTest extends BuildViewTestCase {
     ConfiguredTarget target = getConfiguredTarget("//a:bin");
     CppLinkAction action =
         (CppLinkAction) getGeneratingAction(getFilesToBuild(target).getSingleton());
-    assertThat(MockCcSupport.getLinkopts(action.getLinkCommandLine()))
+    assertThat(MockCcSupport.getLinkopts(action.getLinkCommandLineForTesting()))
         .containsExactly(
             String.format(
                 "-Wl,@%s/a/a.lds",
@@ -807,6 +826,21 @@ public class CcCommonTest extends BuildViewTestCase {
                     .getGenfilesDirectory(RepositoryName.MAIN)
                     .getExecPath()
                     .getPathString()));
+  }
+
+  @Test
+  public void testExpandedEnv() throws Exception {
+    scratch.file(
+        "a/BUILD",
+        "genrule(name = 'linker', cmd='generate', outs=['a.lds'])",
+        "cc_test(",
+        "    name='bin_test',",
+        "    srcs=['b.cc'],",
+        "    env={'SOME_KEY': '-Wl,@$(location a.lds)'},",
+        "    deps=['a.lds'])");
+    ConfiguredTarget starlarkTarget = getConfiguredTarget("//a:bin_test");
+    RunEnvironmentInfo provider = starlarkTarget.get(RunEnvironmentInfo.PROVIDER);
+    assertThat(provider.getEnvironment()).containsEntry("SOME_KEY", "-Wl,@a/a.lds");
   }
 
   @Test
@@ -1114,30 +1148,12 @@ public class CcCommonTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testCppCompileActionArgvReturnParamFile() throws Exception {
-    AnalysisMock.get()
-        .ccSupport()
-        .setupCcToolchainConfig(
-            mockToolsConfig,
-            CcToolchainConfig.builder().withFeatures(CppRuleClasses.COMPILER_PARAM_FILE));
-    scratch.file("a/BUILD", "cc_library(name='foo', srcs=['foo.cc'])");
-    CppCompileAction cppCompileAction = getCppCompileAction("//a:foo");
-    ImmutableList<String> argv =
-        cppCompileAction.getStarlarkArgv().stream()
-            .map(x -> removeOutDirectory(x))
-            .collect(ImmutableList.toImmutableList());
-    assertThat(argv)
-        .containsExactly("/usr/bin/mock-gcc", "@/k8-fastbuild/bin/a/_objs/foo/foo.o.params");
-  }
-
-  @Test
   public void testCppCompileActionArgvIgnoreParamFile() throws Exception {
     AnalysisMock.get()
         .ccSupport()
         .setupCcToolchainConfig(
             mockToolsConfig,
             CcToolchainConfig.builder().withFeatures(CppRuleClasses.COMPILER_PARAM_FILE));
-    useConfiguration("--experimental_cpp_compile_argv_ignore_param_file");
     scratch.file("a/BUILD", "cc_library(name='foo', srcs=['foo.cc'])");
     CppCompileAction cppCompileAction = getCppCompileAction("//a:foo");
     ImmutableList<String> argv =
@@ -1248,6 +1264,9 @@ public class CcCommonTest extends BuildViewTestCase {
 
   @Test
   public void testNoCoptsDisabled() throws Exception {
+    if (analysisMock.isThisBazel()) {
+      return;
+    }
     reporter.removeHandler(failFastHandler);
     scratch.file("x/BUILD", "cc_library(name = 'foo', srcs = ['a.cc'], nocopts = 'abc')");
     useConfiguration("--incompatible_disable_nocopts");

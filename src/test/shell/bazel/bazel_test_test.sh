@@ -540,9 +540,10 @@ EOF
 function test_xml_fallback_for_sharded_test() {
   mkdir -p dir
 
-  cat <<EOF > dir/test.sh
+  cat <<'EOF' > dir/test.sh
 #!/bin/sh
-exit \$((TEST_SHARD_INDEX == 1))
+touch "$TEST_SHARD_STATUS_FILE"
+exit $((TEST_SHARD_INDEX == 1))
 EOF
 
   chmod +x dir/test.sh
@@ -995,6 +996,28 @@ EOF
   cat bazel-testlogs/x/test.xml > $TEST_log
   expect_log "<testsuite name=\"x\""
   expect_log "<testcase name=\"x\""
+}
+
+function test_shard_status_file_checked() {
+  cat <<'EOF' > BUILD
+sh_test(
+    name = 'x',
+    srcs = ['x.sh'],
+    shard_count = 2,
+)
+EOF
+  touch x.sh
+  chmod +x x.sh
+
+  bazel test \
+      --incompatible_check_sharding_support \
+      //:x  &> $TEST_log && fail "expected failure"
+  expect_log "Sharding requested, but the test runner did not advertise support for it by touching TEST_SHARD_STATUS_FILE."
+
+  echo 'touch "$TEST_SHARD_STATUS_FILE"' > x.sh
+  bazel test \
+      --incompatible_check_sharding_support \
+      //:x  &> $TEST_log || fail "expected success"
 }
 
 run_suite "bazel test tests"

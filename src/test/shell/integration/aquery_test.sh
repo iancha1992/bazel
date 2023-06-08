@@ -30,9 +30,15 @@ source "$(rlocation "io_bazel/src/test/shell/integration_test_setup.sh")" \
 
 case "$(uname -s | tr [:upper:] [:lower:])" in
 msys*|mingw*|cygwin*)
+  declare -r is_macos=false
   declare -r is_windows=true
   ;;
+darwin)
+  declare -r is_macos=true
+  declare -r is_windows=false
+  ;;
 *)
+  declare -r is_macos=false
   declare -r is_windows=false
   ;;
 esac
@@ -143,7 +149,7 @@ EOF
   assert_not_contains "echo unused" output
 }
 
-function test_basic_aquery_textproto() {
+function test_basic_aquery_proto() {
   local pkg="${FUNCNAME[0]}"
   mkdir -p "$pkg" || fail "mkdir -p $pkg"
   cat > "$pkg/BUILD" <<'EOF'
@@ -155,6 +161,9 @@ genrule(
 )
 EOF
   bazel aquery --output=proto "//$pkg:bar" \
+    || fail "Expected success"
+
+  bazel aquery --output=streamed_proto "//$pkg:bar" \
     || fail "Expected success"
 
   bazel aquery --output=textproto "//$pkg:bar" > output 2> "$TEST_log" \
@@ -938,6 +947,7 @@ EOF
   # Darwin and Windows only produce 1 CppCompileActionTemplate with PIC,
   # while Linux has both PIC and non-PIC CppCompileActionTemplates
   bazel aquery -c opt --output=text ${QUERY} > output 2> "$TEST_log" \
+    --features=-prefer_pic_for_opt_binaries \
     || fail "Expected success"
   cat output >> "$TEST_log"
   if (is_darwin || $is_windows); then
@@ -1395,6 +1405,38 @@ EOF
   expect_log "--skyframe_state must be used with --output=proto\|textproto\|jsonproto. Invalid aquery output format: text"
 }
 
+function test_aquery_skyframe_state_parallel_output() {
+  local pkg="${FUNCNAME[0]}"
+  mkdir -p "$pkg" || fail "mkdir -p $pkg"
+  cat > "$pkg/BUILD" <<'EOF'
+genrule(
+    name = "foo",
+    srcs = ["foo_matching_in.java"],
+    outs = ["foo_matching_out"],
+    cmd = "echo unused > $(OUTS)",
+)
+EOF
+
+  bazel clean
+
+  bazel aquery --output=textproto --skyframe_state --experimental_parallel_aquery_output > output 2> "$TEST_log" \
+    || fail "Expected success"
+  cat output >> "$TEST_log"
+  assert_not_contains "actions" output
+
+  bazel build --nobuild "//$pkg:foo"
+
+  bazel aquery --output=textproto --skyframe_state --experimental_parallel_aquery_output > output 2> "$TEST_log" \
+    || fail "Expected success"
+  cat output >> "$TEST_log"
+
+  expect_log_once "actions {"
+  assert_contains "input_dep_set_ids: 1" output
+  assert_contains "output_ids: 3" output
+  assert_contains "mnemonic: \"Genrule\"" output
+}
+
+
 function test_summary_output() {
   local pkg="${FUNCNAME[0]}"
   mkdir -p "$pkg" || fail "mkdir -p $pkg"
@@ -1448,7 +1490,7 @@ function test_aquery_include_template_substitution_for_template_expand_action() 
   mkdir -p "$pkg" || fail "mkdir -p $pkg"
 
   cat > "$pkg/template.txt" <<'EOF'
-The token should be substituted: {TOKEN1}
+The token: {TOKEN1}
 EOF
 
   cat > "$pkg/test.bzl" <<'EOF'
@@ -1487,14 +1529,81 @@ EOF
     || fail "Expected success"
   cat output >> "$TEST_log"
 
-  assert_contains "Template: ARTIFACT: $pkg/template.txt" output
+  assert_contains "Template: The token: {TOKEN1}" output
   assert_contains "{{TOKEN1}: 123456}" output
 
   bazel aquery --output=jsonproto ${QUERY} > output 2> "$TEST_log" \
     || fail "Expected success"
 
-  assert_contains "\"templateContent\": \"ARTIFACT: $pkg/template.txt\"" output
+  assert_contains "\"templateContent\": \"The token" output
   assert_contains "\"key\": \"{TOKEN1}\"" output
+  assert_contains "\"value\": \"123456\"" output
+}
+
+# Cre: @keith https://github.com/bazelbuild/bazel/pull/17682
+function test_aquery_multiple_expand_templates() {
+  local pkg="${FUNCNAME[0]}"
+  mkdir -p "$pkg" || fail "mkdir -p $pkg"
+
+  cat > "$pkg/template.txt" <<'EOF'
+The token: {TOKEN1}
+EOF
+
+  cat > "$pkg/test.bzl" <<EOF
+def _impl(ctx):
+    template1 = ctx.actions.declare_file("first.txt")
+    ctx.actions.expand_template(
+        template = ctx.file._template,
+        output = template1,
+        substitutions = {
+            "{TOKEN1}": "{TOKEN2}",
+        },
+    )
+    template2 = ctx.actions.declare_file("second.txt")
+    ctx.actions.expand_template(
+        template = template1,
+        output = template2,
+        substitutions = {
+            "{TOKEN2}": "123456",
+        },
+    )
+    return [DefaultInfo(files = depset([template2]))]
+test_template = rule(
+    _impl,
+    attrs = {
+        "_template": attr.label(
+            default = Label("//$pkg:template.txt"),
+            allow_single_file = True,
+        ),
+    },
+)
+EOF
+
+  cat > "$pkg/BUILD" <<'EOF'
+load('test.bzl', 'test_template')
+test_template(name='foo')
+EOF
+
+  # aquery returns template content and substitutions of TemplateExpand actions.
+  QUERY="//$pkg:foo"
+
+  bazel aquery --output=text ${QUERY} > output 2> "$TEST_log" \
+    || fail "Expected success"
+  cat output >> "$TEST_log"
+
+  assert_contains "Template: The token: {TOKEN1}" output
+  assert_contains "{{TOKEN1}: {TOKEN2}}" output
+  assert_contains "Template: ARTIFACT:.*$pkg/first.txt" output
+  assert_contains "{{TOKEN2}: 123456}" output
+
+  bazel aquery --output=jsonproto ${QUERY} > output 2> "$TEST_log" \
+    || fail "Expected success"
+
+  assert_contains "\"templateContent\": \"The token" output
+  assert_contains "\"templateContent\": \"ARTIFACT" output
+  assert_contains "\"key\": \"{TOKEN1}\"" output
+  assert_contains "\"value\": \"{TOKEN2}\"" output
+  assert_contains "\"key\": \"{TOKEN2}\"" output
   assert_contains "\"value\": \"123456\"" output
 }
 
@@ -1676,6 +1785,28 @@ EOF
 
   expect_log "Target: //peach:bar" "look in $TEST_log"
   expect_log "ActionKey:"
+}
+
+function test_cpp_compile_action_env() {
+  local pkg="${FUNCNAME[0]}"
+  mkdir -p "$pkg"
+
+  touch "$pkg/main.cpp"
+  cat > "$pkg/BUILD" <<'EOF'
+cc_binary(
+    name = "main",
+    srcs = ["main.cpp"],
+)
+EOF
+  bazel aquery --output=textproto \
+     "mnemonic(CppCompile,//$pkg:main)" >output 2> "$TEST_log" || fail "Expected success"
+  cat output >> "$TEST_log"
+
+  if "$is_windows"; then
+    assert_contains '  key: "INCLUDE"' output
+  else
+    assert_contains '  key: "PWD"' output
+  fi
 }
 
 # TODO(bazel-team): The non-text aquery output formats don't correctly handle

@@ -36,6 +36,11 @@ import javax.annotation.Nullable;
  * {@link TransitionFactory} implementation which creates a {@link PatchTransition} which will
  * transition to a configuration suitable for building dependencies for the execution platform of
  * the depending target.
+ *
+ * <p>Note that execGroup is not directly consumed by the involved transition but instead stored
+ * here. Instead, the rule definition stores it in this factory. Then, toolchain resolution extracts
+ * and consumes it to store an execution platform in attrs. Finally, the execution platform is read
+ * by the factory to create the transition.
  */
 public class ExecutionTransitionFactory
     implements TransitionFactory<AttributeTransitionData>, ExecTransitionFactoryApi {
@@ -44,15 +49,20 @@ public class ExecutionTransitionFactory
    * Returns a new {@link ExecutionTransitionFactory} for the default {@link
    * com.google.devtools.build.lib.packages.ExecGroup}.
    */
-  public static ExecutionTransitionFactory create() {
+  public static ExecutionTransitionFactory createFactory() {
     return new ExecutionTransitionFactory(DEFAULT_EXEC_GROUP_NAME);
+  }
+
+  /** Returns a new {@link ExecutionTransition} immediately. */
+  public static PatchTransition createTransition(@Nullable Label executionPlatform) {
+    return new ExecutionTransition(executionPlatform);
   }
 
   /**
    * Returns a new {@link ExecutionTransitionFactory} for the given {@link
    * com.google.devtools.build.lib.packages.ExecGroup}.
    */
-  public static ExecutionTransitionFactory create(String execGroup) {
+  public static ExecutionTransitionFactory createFactory(String execGroup) {
     return new ExecutionTransitionFactory(execGroup);
   }
 
@@ -104,6 +114,10 @@ public class ExecutionTransitionFactory
 
     @Override
     public ImmutableSet<Class<? extends FragmentOptions>> requiresOptionFragments() {
+      // This is technically a lie since the call to underlying().createExecOptions is transitively
+      // reading and potentially modifying all fragments. There is currently no way for the
+      // transition to actually list all fragments like this and thus only lists the ones that are
+      // directly being read here. Note that this transition is exceptional in its implementation.
       return FRAGMENTS;
     }
 
@@ -120,13 +134,11 @@ public class ExecutionTransitionFactory
     }
 
     private static BuildOptions transitionImpl(BuildOptionsView options, Label executionPlatform) {
-      // Start by converting to host options.
+      // Start by converting to exec options.
       BuildOptionsView execOptions =
-          new BuildOptionsView(options.underlying().createHostOptions(), FRAGMENTS);
+          new BuildOptionsView(options.underlying().createExecOptions(), FRAGMENTS);
 
-      // Then unset isHost.
       CoreOptions coreOptions = checkNotNull(execOptions.get(CoreOptions.class));
-      coreOptions.isHost = false;
       coreOptions.isExec = true;
       // Disable extra actions
       coreOptions.actionListeners = ImmutableList.of();
@@ -186,7 +198,8 @@ public class ExecutionTransitionFactory
           result = result.clone();
           break;
         default:
-          // else if OFF do nothing
+          // else if OFF just mark that we are now in an exec transition
+          coreOptions.platformSuffix = "exec";
       }
 
       return result;

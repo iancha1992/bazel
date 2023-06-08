@@ -25,6 +25,7 @@ import com.google.devtools.build.lib.actions.ArtifactRoot;
 import com.google.devtools.build.lib.analysis.AliasProvider;
 import com.google.devtools.build.lib.analysis.FileProvider;
 import com.google.devtools.build.lib.analysis.FilesToRunProvider;
+import com.google.devtools.build.lib.analysis.RepoMappingManifestAction;
 import com.google.devtools.build.lib.analysis.Runfiles;
 import com.google.devtools.build.lib.analysis.RunfilesSupport;
 import com.google.devtools.build.lib.analysis.SingleRunfilesSupplier;
@@ -39,8 +40,10 @@ import com.google.devtools.build.lib.collect.nestedset.Depset;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
-import com.google.devtools.build.lib.rules.cpp.CcInfo;
+import com.google.devtools.build.lib.packages.StarlarkProvider;
+import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.util.Fingerprint;
+import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.Immutable;
@@ -52,6 +55,7 @@ import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.Sequence;
 import net.starlark.java.eval.Starlark;
 import net.starlark.java.eval.StarlarkValue;
+import net.starlark.java.syntax.Location;
 
 /** Bridge to allow builtins bzl code to call Java code. */
 @StarlarkBuiltin(name = "py_builtins", documented = false)
@@ -62,6 +66,20 @@ public abstract class PyBuiltins implements StarlarkValue {
 
   protected PyBuiltins(Runfiles.EmptyFilesSupplier emptyFilesSupplier) {
     this.emptyFilesSupplier = emptyFilesSupplier;
+  }
+
+  @StarlarkMethod(
+      name = "is_bzlmod_enabled",
+      doc = "Tells if bzlmod is enabled",
+      parameters = {
+        @Param(name = "ctx", positional = true, named = true, defaultValue = "unbound")
+      })
+  public boolean isBzlmodEnabled(StarlarkRuleContext starlarkCtx) {
+    return starlarkCtx
+        .getRuleContext()
+        .getAnalysisEnvironment()
+        .getStarlarkSemantics()
+        .getBool(BuildLanguageOptions.ENABLE_BZLMOD);
   }
 
   @StarlarkMethod(
@@ -91,19 +109,31 @@ public abstract class PyBuiltins implements StarlarkValue {
   }
 
   @StarlarkMethod(
-      name = "new_py_cc_link_params_provider",
-      doc = "Creates a <code>PyCcLinkParamsProvder</code>.",
+      name = "get_legacy_external_runfiles",
+      doc = "Get the --legacy_external_runfiles flag value",
       parameters = {
-        @Param(
-            name = "cc_info",
-            positional = false,
-            named = true,
-            defaultValue = "unbound",
-            doc = "The CcInfo whose linking context to propagate; other information is discarded"),
-      },
-      useStarlarkThread = false)
-  public PyCcLinkParamsProvider newPyCcLinkParamsProvider(CcInfo ccInfo) {
-    return new PyCcLinkParamsProvider(ccInfo);
+        @Param(name = "ctx", positional = true, named = true, defaultValue = "unbound")
+      })
+  public boolean getLegacyExternalRunfiles(StarlarkRuleContext starlarkCtx) throws EvalException {
+    return starlarkCtx.getConfiguration().legacyExternalRunfiles();
+  }
+
+  @StarlarkMethod(
+      name = "get_rule_name",
+      doc = "Get the name of the rule for the given ctx",
+      parameters = {
+        @Param(name = "ctx", positional = true, named = true, defaultValue = "unbound")
+      })
+  public String getRuleName(StarlarkRuleContext starlarkCtx) throws EvalException {
+    return starlarkCtx.getRuleContext().getRule().getRuleClass();
+  }
+
+  @StarlarkMethod(
+      name = "get_current_os_name",
+      doc = "Get the name of the OS Bazel itself is running on.",
+      parameters = {})
+  public String getCurrentOsName() {
+    return OS.getCurrent().getCanonicalName();
   }
 
   // TODO(b/69113360): Remove once par-generation is moved out of the py_binary rule itself.
@@ -120,8 +150,8 @@ public abstract class PyBuiltins implements StarlarkValue {
     return new SingleRunfilesSupplier(
         PathFragment.create(runfilesStr),
         runfiles,
-        /*manifest=*/ null,
-        /*repoMappingManifest=*/ null,
+        /* manifest= */ null,
+        /* repoMappingManifest= */ null,
         ruleContext.getConfiguration().buildRunfileLinks(),
         ruleContext.getConfiguration().runfilesEnabled());
   }
@@ -163,6 +193,15 @@ public abstract class PyBuiltins implements StarlarkValue {
     return inputManifest.buildImmutable();
   }
 
+  @StarlarkMethod(
+      name = "get_label_repo_runfiles_path",
+      doc = "Given a label, return a runfiles path that includes the repository directory",
+      parameters = {
+        @Param(name = "label", positional = true, named = true, defaultValue = "unbound"),
+      })
+  public String getLabelRepoRunfilesPath(Label label) {
+    return label.getPackageIdentifier().getRunfilesPath().getPathString();
+  }
   // TODO(bazel-team): Remove this once rules are switched to using execpath semanatics for the
   // $(location) function. See https://github.com/bazelbuild/bazel/issues/15294
   @StarlarkMethod(
@@ -198,7 +237,7 @@ public abstract class PyBuiltins implements StarlarkValue {
       })
   public Object expandLocationAndMakeVariables(
       StarlarkRuleContext ruleContext, String attributeName, String expression, Sequence<?> targets)
-      throws EvalException {
+      throws EvalException, InterruptedException {
     ImmutableMap.Builder<Label, ImmutableCollection<Artifact>> builder = ImmutableMap.builder();
 
     for (TransitiveInfoCollection current :
@@ -253,7 +292,7 @@ public abstract class PyBuiltins implements StarlarkValue {
       })
   public Object newEmptyRunfilesWithMiddleman(
       StarlarkRuleContext starlarkCtx, Runfiles runfiles, Artifact executable)
-      throws EvalException {
+      throws EvalException, InterruptedException {
     // NOTE: The RunfilesSupport created here must exactly match the one done as part of Starlark
     // rule processing, otherwise action output conflicts occur. See
     // https://github.com/bazelbuild/bazel/blob/1940c5d68136ce2079efa8ff74d4e5fdf63ee3e6/src/main/java/com/google/devtools/build/lib/analysis/starlark/StarlarkRuleConfiguredTargetUtil.java#L642-L651
@@ -263,6 +302,28 @@ public abstract class PyBuiltins implements StarlarkValue {
             starlarkCtx.getWorkspaceName(), starlarkCtx.getConfiguration().legacyExternalRunfiles())
         .addLegacyExtraMiddleman(runfilesSupport.getRunfilesMiddleman())
         .build();
+  }
+
+  @StarlarkMethod(
+      name = "create_repo_mapping_manifest",
+      doc = "Write a repo_mapping file for the given runfiles",
+      parameters = {
+        @Param(name = "ctx", positional = false, named = true, defaultValue = "unbound"),
+        @Param(name = "runfiles", positional = false, named = true, defaultValue = "unbound"),
+        @Param(name = "output", positional = false, named = true, defaultValue = "unbound")
+      })
+  public void repoMappingAction(
+      StarlarkRuleContext starlarkCtx, Runfiles runfiles, Artifact repoMappingManifest) {
+    var ruleContext = starlarkCtx.getRuleContext();
+    ruleContext
+        .getAnalysisEnvironment()
+        .registerAction(
+            new RepoMappingManifestAction(
+                ruleContext.getActionOwner(),
+                repoMappingManifest,
+                ruleContext.getTransitivePackagesForRunfileRepoMappingManifest(),
+                runfiles.getAllArtifacts(),
+                ruleContext.getWorkspaceName()));
   }
 
   @StarlarkMethod(
@@ -291,6 +352,31 @@ public abstract class PyBuiltins implements StarlarkValue {
     return new Runfiles.Builder(
             starlarkCtx.getWorkspaceName(), starlarkCtx.getConfiguration().legacyExternalRunfiles())
         .setEmptyFilesSupplier(emptyFilesSupplier)
+        .merge(runfiles)
+        .build();
+  }
+
+  // TODO(https://github.com/bazelbuild/bazel/issues/17415): Remove this method one
+  // --legacy_external_runfiles is defaulted to false
+  @StarlarkMethod(
+      name = "make_runfiles_respect_legacy_external_runfiles",
+      doc =
+          "Like ctx.runfiles().merge(), except the --legacy_external_runfiles flag "
+              + "is respected, otherwise files in other repos don't have the legacy "
+              + " external/ path show up; see https://github.com/bazelbuild/bazel/issues/17415",
+      parameters = {
+        @Param(name = "ctx", positional = true, named = true, defaultValue = "unbound"),
+        @Param(
+            name = "runfiles",
+            positional = true,
+            named = true,
+            defaultValue = "unbound",
+            doc = "Runfiles to include"),
+      })
+  public Object mergeAllRunfilesRespectExternalLegacyRunfiles(
+      StarlarkRuleContext starlarkCtx, Runfiles runfiles) throws EvalException {
+    return new Runfiles.Builder(
+            starlarkCtx.getWorkspaceName(), starlarkCtx.getConfiguration().legacyExternalRunfiles())
         .merge(runfiles)
         .build();
   }
@@ -332,7 +418,7 @@ public abstract class PyBuiltins implements StarlarkValue {
                 ruleContext.getActionOwner(),
                 output,
                 runfiles,
-                /*repoMappingManifest=*/ null,
+                /* repoMappingManifest= */ null,
                 ruleContext.getConfiguration().remotableSourceManifestActions()));
   }
 
@@ -361,7 +447,7 @@ public abstract class PyBuiltins implements StarlarkValue {
           owner,
           NestedSetBuilder.create(Order.STABLE_ORDER, readFrom),
           writeTo,
-          /* makeExecutable=*/ false);
+          /* makeExecutable= */ false);
     }
 
     @Override
@@ -466,5 +552,19 @@ public abstract class PyBuiltins implements StarlarkValue {
             "dependency_transitive_python_sources");
     PyCommon.registerPyExtraActionPseudoAction(
         starlarkCtx.getRuleContext(), dependencyTransitivePythonSources);
+  }
+
+  private static final StarlarkProvider starlarkVisibleForTestingInfo =
+      StarlarkProvider.builder(Location.BUILTIN)
+          .setExported(
+              new StarlarkProvider.Key(
+                  Label.parseCanonicalUnchecked(
+                      "//tools/build_defs/python/tests/base_rules:util.bzl"),
+                  "VisibleForTestingInfo"))
+          .build();
+
+  @StarlarkMethod(name = "VisibleForTestingInfo", documented = false, structField = true)
+  public StarlarkProvider visibleForTestingInfo() throws EvalException {
+    return starlarkVisibleForTestingInfo;
   }
 }

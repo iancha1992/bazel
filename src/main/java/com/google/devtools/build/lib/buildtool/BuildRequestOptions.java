@@ -23,6 +23,7 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.common.options.BoolOrEnumConverter;
 import com.google.devtools.common.options.Converters;
 import com.google.devtools.common.options.Converters.CaffeineSpecConverter;
+import com.google.devtools.common.options.Converters.PercentageConverter;
 import com.google.devtools.common.options.Converters.RangeConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDocumentationCategory;
@@ -65,6 +66,14 @@ public class BuildRequestOptions extends OptionsBase {
               + " may cause memory issues. \"auto\" calculates a reasonable default based on"
               + " host resources.")
   public int jobs;
+
+  @Option(
+      name = "experimental_use_semaphore_for_jobs",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
+      effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS, OptionEffectTag.EXECUTION},
+      help = "If set to true, additionally use semaphore to limit number of concurrent jobs.")
+  public boolean useSemaphoreForJobs;
 
   @Option(
       name = "progress_report_interval",
@@ -166,7 +175,7 @@ public class BuildRequestOptions extends OptionsBase {
       effectTags = {OptionEffectTag.EXECUTION, OptionEffectTag.AFFECTS_OUTPUTS},
       help =
           "Whether to run validation actions as part of the build. See"
-              + " https://bazel.build/rules/rules#validation_actions")
+              + " https://bazel.build/extending/rules#validation_actions")
   public boolean runValidationActions;
 
   @Option(
@@ -183,13 +192,15 @@ public class BuildRequestOptions extends OptionsBase {
       documentationCategory = OptionDocumentationCategory.LOGGING,
       effectTags = {OptionEffectTag.AFFECTS_OUTPUTS},
       help =
-          "Show the results of the build.  For each target, state whether or not it was brought "
-              + "up-to-date, and if so, a list of output files that were built.  The printed files "
-              + "are convenient strings for copy+pasting to the shell, to execute them.\n"
-              + "This option requires an integer argument, which is the threshold number of "
-              + "targets above which result information is not printed. Thus zero causes "
-              + "suppression of the message and MAX_INT causes printing of the result to occur "
-              + "always.  The default is one.")
+          "Show the results of the build.  For each target, state whether or not it was brought"
+              + " up-to-date, and if so, a list of output files that were built.  The printed files"
+              + " are convenient strings for copy+pasting to the shell, to execute them.\n"
+              + "This option requires an integer argument, which is the threshold number of targets"
+              + " above which result information is not printed. Thus zero causes suppression of"
+              + " the message and MAX_INT causes printing of the result to occur always. The"
+              + " default is one.\n"
+              + "If nothing was built for a target its results may be omitted to keep the output"
+              + " under the threshold.")
   public int maxResultTargets;
 
   @Option(
@@ -409,7 +420,8 @@ public class BuildRequestOptions extends OptionsBase {
   public boolean useActionCache;
 
   @Option(
-      name = "experimental_action_cache_store_output_metadata",
+      name = "action_cache_store_output_metadata",
+      oldName = "experimental_action_cache_store_output_metadata",
       defaultValue = "false",
       documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
       effectTags = {
@@ -450,15 +462,6 @@ public class BuildRequestOptions extends OptionsBase {
   public boolean incompatibleSkipGenfilesSymlink;
 
   @Option(
-      name = "experimental_use_fork_join_pool",
-      defaultValue = "false",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      metadataTags = OptionMetadataTag.EXPERIMENTAL,
-      effectTags = {OptionEffectTag.EXECUTION},
-      help = "If this flag is set, use a fork join pool in the abstract queue visitor.")
-  public boolean useForkJoinPool;
-
-  @Option(
       name = "target_pattern_file",
       defaultValue = "",
       documentationCategory = OptionDocumentationCategory.GENERIC_INPUTS,
@@ -468,7 +471,10 @@ public class BuildRequestOptions extends OptionsBase {
               + "line. It is an error to specify a file here as well as command-line patterns.")
   public String targetPatternFile;
 
-  /** Do not use directly. Instead use {@link shouldMergeSkyframeAnalysisExecution}. */
+  /**
+   * Do not use directly. Instead use {@link
+   * com.google.devtools.build.lib.runtime.CommandEnvironment#withMergedAnalysisAndExecutionSourceOfTruth()}.
+   */
   @Option(
       name = "experimental_merged_skyframe_analysis_execution",
       defaultValue = "false",
@@ -477,6 +483,22 @@ public class BuildRequestOptions extends OptionsBase {
       effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS, OptionEffectTag.EXECUTION},
       help = "If this flag is set, the analysis and execution phases of Skyframe are merged.")
   public boolean mergedSkyframeAnalysisExecutionDoNotUseDirectly;
+
+  @Option(
+      name = "experimental_skymeld_analysis_overlap_percentage",
+      defaultValue = "100",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      metadataTags = OptionMetadataTag.EXPERIMENTAL,
+      effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS, OptionEffectTag.EXECUTION},
+      converter = PercentageConverter.class,
+      help =
+          "The value represents the % of the analysis phase which will be overlapped with the"
+              + " execution phase. A value of x means Skyframe will queue up execution tasks and"
+              + " wait until there's x% of the top level target left to be analyzed before allowing"
+              + " them to launch. When the value is 0%, we'd wait for all analysis to finish before"
+              + " executing (no overlap). When it's 100%, the phases are free to overlap as much as"
+              + " they can.")
+  public int skymeldAnalysisOverlapPercentage;
 
   /** Converter for filesystem value checker threads. */
   public static class ThreadConverter extends ResourceConverter {
@@ -523,19 +545,6 @@ public class BuildRequestOptions extends OptionsBase {
               + " Bazel's output base, unless it's an absolute path.")
   @Nullable
   public PathFragment aqueryDumpAfterBuildOutputFile;
-
-  /**
-   * --nobuild means no execution will be carried out, hence it doesn't make sense to interleave
-   * analysis and execution in that case and --experimental_merged_skyframe_analysis_execution
-   * should be ignored.
-   *
-   * <p>This method should always be preferred over {@link
-   * mergedSkyframeAnalysisExecutionDoNotUseDirectly} to determine whether analysis and execution
-   * should be merged. The only exception to this is in {@link BuildRequest}.
-   */
-  public boolean shouldMergeSkyframeAnalysisExecution() {
-    return mergedSkyframeAnalysisExecutionDoNotUseDirectly && performExecutionPhase;
-  }
 
   /**
    * Converter for jobs: Takes keyword ({@value #FLAG_SYNTAX}). Values must be between 1 and

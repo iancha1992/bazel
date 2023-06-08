@@ -34,6 +34,8 @@ def create_deploy_archives(
         main_class,
         coverage_main_class,
         strip_as_default,
+        stamp,
+        build_target,
         hermetic = False,
         add_exports = depset(),
         add_opens = depset(),
@@ -51,7 +53,9 @@ def create_deploy_archives(
         runfiles: (Depset) the runfiles for the deploy jar
         main_class: (String) FQN of the entry point for execution
         coverage_main_class: (String) FQN of the entry point for coverage collection
+        build_target: (String) Name of the build target for stamping
         strip_as_default: (bool) Whether to create unstripped deploy jar
+        stamp: (bool) Value of stamping attribute on the rule
         hermetic: (bool)
         add_exports: (depset)
         add_opens: (depset)
@@ -71,11 +75,11 @@ def create_deploy_archives(
         ],
         order = "preorder",
     )
-
-    build_info_files = java_common.get_build_info(ctx)
     multi_release = ctx.fragments.java.multi_release_deploy_jars
 
-    _create_deploy_archive(
+    build_info_files = semantics.get_build_info(ctx, stamp)
+
+    create_deploy_archive(
         ctx,
         launcher_info.launcher,
         runfiles,
@@ -86,6 +90,7 @@ def create_deploy_archives(
         runtime_classpath,
         manifest_lines,
         build_info_files,
+        build_target,
         output = ctx.outputs.deployjar,
         shared_archive = shared_archive,
         one_version_level = one_version_level,
@@ -98,7 +103,7 @@ def create_deploy_archives(
     )
 
     if strip_as_default:
-        _create_deploy_archive(
+        create_deploy_archive(
             ctx,
             launcher_info.unstripped_launcher,
             runfiles,
@@ -109,6 +114,7 @@ def create_deploy_archives(
             runtime_classpath,
             manifest_lines,
             build_info_files,
+            build_target,
             output = ctx.outputs.unstrippeddeployjar,
             multi_release = multi_release,
             hermetic = hermetic,
@@ -117,7 +123,7 @@ def create_deploy_archives(
     else:
         ctx.actions.write(ctx.outputs.unstrippeddeployjar, "")
 
-def _create_deploy_archive(
+def create_deploy_archive(
         ctx,
         launcher,
         runfiles,
@@ -128,6 +134,7 @@ def _create_deploy_archive(
         runtime_classpath,
         manifest_lines,
         build_info_files,
+        build_target,
         output,
         shared_archive = None,
         one_version_level = "OFF",
@@ -137,6 +144,31 @@ def _create_deploy_archive(
         add_exports = [],
         add_opens = [],
         extra_args = []):
+    """ Creates a deploy jar
+
+    Args:
+        ctx: (RuleContext) The rule context
+        launcher: (File) the launcher artifact
+        runfiles: (Depset) the runfiles for the deploy jar
+        main_class: (String) FQN of the entry point for execution
+        coverage_main_class: (String) FQN of the entry point for coverage collection
+        resources: (Depset) resource inputs
+        classpath_resources: (Depset) classpath resource inputs
+        runtime_classpath: (Depset) source files to add to the jar
+        build_target: (String) Name of the build target for stamping
+        manifest_lines: (list[String]) Optional lines added to the jar manifest
+        build_info_files: (list[File]) build info files for stamping
+        build_target: (String) the owner build target label name string
+        output: (File) the output jar artifact
+        shared_archive: (File) Optional .jsa artifact
+        one_version_level: (String) Optional one version check level, default OFF
+        one_version_allowlist: (File) Optional allowlist for one version check
+        multi_release: (bool)
+        hermetic: (bool)
+        add_exports: (depset)
+        add_opens: (depset)
+        extra_args: (list[Args]) Optional arguments for the deploy jar action
+    """
     runtime = semantics.find_java_runtime_toolchain(ctx)
 
     input_files = []
@@ -145,7 +177,6 @@ def _create_deploy_archive(
     single_jar = semantics.find_java_toolchain(ctx).single_jar
 
     manifest_lines = list(manifest_lines)
-    manifest_lines.extend(ctx.attr.deploy_manifest_lines)
     if ctx.configuration.coverage_enabled:
         manifest_lines.append("Coverage-Main-Class: %s" % coverage_main_class)
 
@@ -153,6 +184,7 @@ def _create_deploy_archive(
     args.set_param_file_format("shell").use_param_file("@%s", use_always = True)
 
     args.add("--output", output)
+    args.add("--build_target", build_target)
     args.add("--normalize")
     args.add("--compression")
     if main_class:
@@ -176,10 +208,6 @@ def _create_deploy_archive(
         if one_version_level == "WARNING":
             args.add("--succeed_on_found_violations")
 
-    if shared_archive:
-        input_files.append(shared_archive)
-        args.add("--cds_archive", shared_archive)
-
     if multi_release:
         args.add("--multi_release")
 
@@ -191,6 +219,13 @@ def _create_deploy_archive(
         args.add("--jdk_lib_modules", lib_modules)
         args.add_all("--resources", hermetic_files)
         input_files.append(lib_modules)
+
+        if shared_archive == None:
+            shared_archive = runtime.default_cds
+
+    if shared_archive:
+        input_files.append(shared_archive)
+        args.add("--cds_archive", shared_archive)
 
     args.add_all("--add_exports", add_exports)
     args.add_all("--add_opens", add_opens)
@@ -213,15 +248,12 @@ def _create_deploy_archive(
         arguments = [args] + extra_args,
         use_default_shell_env = True,
     )
-    return output
 
-DEPLOY_JAR_RULE_NAME_SUFFIX = "_deployjars_internal_rule"
-
-def _implicit_outputs(name):
-    actual_name = name[:-len(DEPLOY_JAR_RULE_NAME_SUFFIX)]
+def _implicit_outputs(binary):
+    binary_name = binary.name
     return {
-        "deployjar": "%s_deploy.jar" % actual_name,
-        "unstrippeddeployjar": "%s_deploy.jar.unstripped" % actual_name,
+        "deployjar": "%s_deploy.jar" % binary_name,
+        "unstrippeddeployjar": "%s_deploy.jar.unstripped" % binary_name,
     }
 
 def make_deploy_jars_rule(implementation):
@@ -237,8 +269,6 @@ def make_deploy_jars_rule(implementation):
         implementation = implementation,
         attrs = {
             "binary": attr.label(mandatory = True),
-            "deploy_manifest_lines": attr.string_list(),
-            "stamp": attr.int(default = -1, values = [-1, 0, 1]),
             # TODO(b/245144242): Used by IDE integration, remove when toolchains are used
             "_java_toolchain": attr.label(
                 default = semantics.JAVA_TOOLCHAIN_LABEL,
@@ -247,6 +277,9 @@ def make_deploy_jars_rule(implementation):
             "_cc_toolchain": attr.label(default = "@" + cc_semantics.get_repo() + "//tools/cpp:current_cc_toolchain"),
             "_java_toolchain_type": attr.label(default = semantics.JAVA_TOOLCHAIN_TYPE),
             "_java_runtime_toolchain_type": attr.label(default = semantics.JAVA_RUNTIME_TOOLCHAIN_TYPE),
+            "_build_info_translator": attr.label(
+                default = semantics.BUILD_INFO_TRANSLATOR_LABEL,
+            ),
         },
         outputs = _implicit_outputs,
         fragments = ["java"],

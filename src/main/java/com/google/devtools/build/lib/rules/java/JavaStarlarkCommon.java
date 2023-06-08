@@ -14,12 +14,15 @@
 package com.google.devtools.build.lib.rules.java;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.devtools.build.lib.packages.ExecGroup.DEFAULT_EXEC_GROUP_NAME;
 
 import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.analysis.ConfiguredTarget;
+import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.configuredtargets.AbstractConfiguredTarget;
 import com.google.devtools.build.lib.analysis.configuredtargets.MergedConfiguredTarget;
@@ -35,6 +38,7 @@ import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.packages.Provider;
 import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.rules.cpp.CcInfo;
+import com.google.devtools.build.lib.rules.cpp.CppFileTypes;
 import com.google.devtools.build.lib.rules.java.JavaRuleOutputJarsProvider.JavaOutput;
 import com.google.devtools.build.lib.starlarkbuildapi.core.ProviderApi;
 import com.google.devtools.build.lib.starlarkbuildapi.core.TransitiveInfoCollectionApi;
@@ -153,6 +157,15 @@ public class JavaStarlarkCommon
         || injectingRuleKind != Starlark.NONE) {
       checkPrivateAccess(thread);
     }
+
+    if (starlarkRuleContext.getRuleContext().useAutoExecGroups()) {
+      String javaToolchainType = javaSemantics.getJavaToolchainType();
+      if (!starlarkRuleContext.getRuleContext().hasToolchainContext(javaToolchainType)) {
+        throw Starlark.errorf(
+            "Action declared for non-existent toolchain '%s'.", javaToolchainType);
+      }
+    }
+
     return JavaInfoBuildHelper.getInstance()
         .createJavaCompileAction(
             starlarkRuleContext,
@@ -193,6 +206,14 @@ public class JavaStarlarkCommon
             thread);
   }
 
+  private String getExecGroup(boolean useAutoExecGroups) {
+    if (useAutoExecGroups) {
+      return javaSemantics.getJavaToolchainType();
+    } else {
+      return DEFAULT_EXEC_GROUP_NAME;
+    }
+  }
+
   @Override
   public Artifact runIjar(
       StarlarkActionFactory actions,
@@ -211,7 +232,8 @@ public class JavaStarlarkCommon
             jar,
             output != Starlark.NONE ? (Artifact) output : null,
             targetLabel != Starlark.NONE ? (Label) targetLabel : null,
-            javaToolchain);
+            javaToolchain,
+            getExecGroup(actions.getRuleContext().useAutoExecGroups()));
   }
 
   @Override
@@ -221,7 +243,13 @@ public class JavaStarlarkCommon
       Label targetLabel,
       JavaToolchainProvider javaToolchain)
       throws EvalException {
-    return JavaInfoBuildHelper.getInstance().stampJar(actions, jar, targetLabel, javaToolchain);
+    return JavaInfoBuildHelper.getInstance()
+        .stampJar(
+            actions,
+            jar,
+            targetLabel,
+            javaToolchain,
+            getExecGroup(actions.getRuleContext().useAutoExecGroups()));
   }
 
   @Override
@@ -241,7 +269,8 @@ public class JavaStarlarkCommon
             outputSourceJar instanceof Artifact ? (Artifact) outputSourceJar : null,
             Sequence.cast(sourceFiles, Artifact.class, "sources"),
             Sequence.cast(sourceJars, Artifact.class, "source_jars"),
-            javaToolchain);
+            javaToolchain,
+            getExecGroup(actions.getRuleContext().useAutoExecGroups()));
   }
 
   @Override
@@ -272,8 +301,7 @@ public class JavaStarlarkCommon
   public JavaInfo makeNonStrict(JavaInfo javaInfo) {
     return JavaInfo.Builder.copyOf(javaInfo)
         // Overwrites the old provider.
-        .addProvider(
-            JavaCompilationArgsProvider.class,
+        .javaCompilationArgs(
             JavaCompilationArgsProvider.makeNonStrict(
                 javaInfo.getProvider(JavaCompilationArgsProvider.class)))
         .build();
@@ -346,10 +374,14 @@ public class JavaStarlarkCommon
   }
 
   @Override
-  public String getTargetKind(Object target, StarlarkThread thread) throws EvalException {
+  public String getTargetKind(Object target, boolean dereferenceAliases, StarlarkThread thread)
+      throws EvalException {
     checkPrivateAccess(thread);
     if (target instanceof MergedConfiguredTarget) {
       target = ((MergedConfiguredTarget) target).getBaseConfiguredTarget();
+    }
+    if (dereferenceAliases && target instanceof ConfiguredTarget) {
+      target = ((ConfiguredTarget) target).getActual();
     }
     if (target instanceof AbstractConfiguredTarget) {
       return ((AbstractConfiguredTarget) target).getRuleClassString();
@@ -390,34 +422,37 @@ public class JavaStarlarkCommon
             .build();
     JavaInfo.Builder builder = JavaInfo.Builder.create();
     if (javaInfo.getProvider(JavaCompilationInfoProvider.class) != null) {
-      builder.addProvider(JavaCompilationInfoProvider.class, javaInfo.getCompilationInfoProvider());
+      builder.javaCompilationInfo(javaInfo.getCompilationInfoProvider());
     } else if (javaInfo.getProvider(JavaCompilationArgsProvider.class) != null) {
       JavaCompilationArgsProvider compilationArgsProvider =
           javaInfo.getProvider(JavaCompilationArgsProvider.class);
-      builder.addProvider(
-          JavaCompilationInfoProvider.class,
+      builder.javaCompilationInfo(
           new JavaCompilationInfoProvider.Builder()
               .setCompilationClasspath(compilationArgsProvider.getTransitiveCompileTimeJars())
               .setRuntimeClasspath(compilationArgsProvider.getRuntimeJars())
               .build());
     }
     if (javaInfo.getProvider(JavaGenJarsProvider.class) != null) {
-      builder.addProvider(JavaGenJarsProvider.class, javaInfo.getGenJarsProvider());
+      builder.javaGenJars(javaInfo.getGenJarsProvider());
     }
     return builder
-        .addProvider(JavaCcInfoProvider.class, javaInfo.getProvider(JavaCcInfoProvider.class))
-        .addProvider(
-            JavaSourceJarsProvider.class, javaInfo.getProvider(JavaSourceJarsProvider.class))
-        .addProvider(JavaRuleOutputJarsProvider.class, ruleOutputs)
+        .javaCcInfo(javaInfo.getProvider(JavaCcInfoProvider.class))
+        .javaSourceJars(javaInfo.getProvider(JavaSourceJarsProvider.class))
+        .javaRuleOutputs(ruleOutputs)
         .build();
   }
 
   @Override
-  public Sequence<Artifact> getBuildInfo(StarlarkRuleContext ruleContext, StarlarkThread thread)
+  public Sequence<Artifact> getBuildInfo(
+      StarlarkRuleContext starlarkRuleContext, boolean isStampingEnabled, StarlarkThread thread)
       throws EvalException, InterruptedException {
     checkPrivateAccess(thread);
+    RuleContext ruleContext = starlarkRuleContext.getRuleContext();
     return StarlarkList.immutableCopyOf(
-        ruleContext.getRuleContext().getBuildInfo(JavaBuildInfoFactory.KEY));
+        ruleContext
+            .getAnalysisEnvironment()
+            .getBuildInfo(
+                isStampingEnabled, JavaBuildInfoFactory.KEY, ruleContext.getConfiguration()));
   }
 
   @Override
@@ -434,7 +469,23 @@ public class JavaStarlarkCommon
     checkPrivateAccess(thread);
     ImmutableList<Artifact> nativeLibs =
         JavaCommon.collectNativeLibraries(
-            Sequence.cast(deps, TransitiveInfoCollection.class, "deps"));
+                Sequence.cast(deps, TransitiveInfoCollection.class, "deps"))
+            .stream()
+            .filter(
+                nativeLibrary -> {
+                  String name = nativeLibrary.getFilename();
+                  if (CppFileTypes.INTERFACE_SHARED_LIBRARY.matches(name)) {
+                    return false;
+                  }
+                  if (!(CppFileTypes.SHARED_LIBRARY.matches(name)
+                      || CppFileTypes.VERSIONED_SHARED_LIBRARY.matches(name))) {
+                    throw new IllegalArgumentException(
+                        "not a shared library :" + nativeLibrary.prettyPrint());
+                  }
+                  return true;
+                })
+            .collect(toImmutableList());
+
     Set<String> uniqueDirs = new LinkedHashSet<>();
     for (Artifact nativeLib : nativeLibs) {
       uniqueDirs.add(nativeLib.getRootRelativePath().getParentDirectory().getPathString());
@@ -451,11 +502,11 @@ public class JavaStarlarkCommon
       return runtimeClasspath;
     } else {
       return Depset.of(
-          Artifact.TYPE,
+          Artifact.class,
           NestedSetBuilder.wrap(
               Order.STABLE_ORDER,
               Iterables.filter(
-                  runtimeClasspath.toList(),
+                  runtimeClasspath.toList(Artifact.class),
                   Predicates.not(Predicates.in(excludedArtifacts.getSet().toSet())))));
     }
   }

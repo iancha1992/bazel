@@ -31,9 +31,8 @@ import com.google.common.flogger.GoogleLogger;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
 import com.google.devtools.build.lib.actions.ActionGraph;
 import com.google.devtools.build.lib.actions.ActionLookupData;
-import com.google.devtools.build.lib.actions.ActionLookupKey;
+import com.google.devtools.build.lib.actions.ActionLookupKeyOrProxy;
 import com.google.devtools.build.lib.actions.ActionLookupValue;
-import com.google.devtools.build.lib.actions.Actions;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.ArtifactFactory;
 import com.google.devtools.build.lib.actions.BuildFailedException;
@@ -41,10 +40,11 @@ import com.google.devtools.build.lib.actions.PackageRoots;
 import com.google.devtools.build.lib.actions.ResourceManager;
 import com.google.devtools.build.lib.actions.TestExecException;
 import com.google.devtools.build.lib.actions.TotalAndConfiguredTargetOnlyMetric;
-import com.google.devtools.build.lib.analysis.config.BuildConfigurationCollection;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
+import com.google.devtools.build.lib.analysis.config.ConfigRequestedEvent;
 import com.google.devtools.build.lib.analysis.config.ConfigurationResolver.TopLevelTargetsAndConfigsResult;
+import com.google.devtools.build.lib.analysis.config.CoreOptions;
 import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
 import com.google.devtools.build.lib.analysis.constraints.PlatformRestrictionsResult;
 import com.google.devtools.build.lib.analysis.constraints.RuleContextConstraintSemantics;
@@ -59,8 +59,10 @@ import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
+import com.google.devtools.build.lib.concurrent.QuiescingExecutors;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadCompatible;
 import com.google.devtools.build.lib.events.Event;
+import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.packages.AspectClass;
 import com.google.devtools.build.lib.packages.Attribute;
@@ -90,6 +92,7 @@ import com.google.devtools.build.lib.skyframe.RepositoryMappingValue.RepositoryM
 import com.google.devtools.build.lib.skyframe.SkyframeAnalysisAndExecutionResult;
 import com.google.devtools.build.lib.skyframe.SkyframeAnalysisResult;
 import com.google.devtools.build.lib.skyframe.SkyframeBuildView;
+import com.google.devtools.build.lib.skyframe.SkyframeBuildView.BuildDriverKeyTestContext;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
 import com.google.devtools.build.lib.skyframe.TargetPatternPhaseValue;
 import com.google.devtools.build.lib.util.AbruptExitException;
@@ -147,6 +150,8 @@ import javax.annotation.Nullable;
  * </ul>
  *
  * <p>See also {@link ConfiguredTarget} which documents some important invariants.
+ *
+ * <p>Lifespan: 1 invocation.
  */
 public class BuildView {
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
@@ -157,6 +162,8 @@ public class BuildView {
   private final SkyframeBuildView skyframeBuildView;
 
   private final ConfiguredRuleClassProvider ruleClassProvider;
+
+  @Nullable private ImmutableSet<Artifact> memoizedCoverageArtifacts;
 
   /** A factory class to create the coverage report action. May be null. */
   @Nullable private final CoverageReportActionFactory coverageReportActionFactory;
@@ -208,21 +215,27 @@ public class BuildView {
       ImmutableMap<String, String> aspectsParameters,
       AnalysisOptions viewOptions,
       boolean keepGoing,
+      boolean skipIncompatibleExplicitTargets,
       boolean checkForActionConflicts,
-      int loadingPhaseThreads,
+      QuiescingExecutors executors,
       TopLevelArtifactContext topLevelOptions,
       boolean reportIncompatibleTargets,
       ExtendedEventHandler eventHandler,
       EventBus eventBus,
       BugReporter bugReporter,
       boolean includeExecutionPhase,
-      int mergedPhasesExecutionJobsCount,
+      int skymeldAnalysisOverlapPercentage,
       @Nullable ResourceManager resourceManager,
       @Nullable BuildResultListener buildResultListener,
       @Nullable ExecutionSetup executionSetupCallback,
-      @Nullable BuildConfigurationsCreated buildConfigurationsCreatedCallback)
-      throws ViewCreationFailedException, InvalidConfigurationException, InterruptedException,
-          BuildFailedException, TestExecException, AbruptExitException {
+      @Nullable BuildConfigurationsCreated buildConfigurationsCreatedCallback,
+      @Nullable BuildDriverKeyTestContext buildDriverKeyTestContext)
+      throws ViewCreationFailedException,
+          InvalidConfigurationException,
+          InterruptedException,
+          BuildFailedException,
+          TestExecException,
+          AbruptExitException {
     logger.atInfo().log("Starting analysis");
     pollInterruptedStatus();
 
@@ -239,33 +252,33 @@ public class BuildView {
     eventBus.post(new AnalysisPhaseStartedEvent(labelToTargetMap.values()));
 
     // Prepare the analysis phase
-    BuildConfigurationCollection configurations;
+    BuildConfigurationValue topLevelConfig;
     TopLevelTargetsAndConfigsResult topLevelTargetsWithConfigsResult;
     // Configuration creation.
-    // TODO(gregce): Consider dropping this phase and passing on-the-fly target / host configs as
+    // TODO(gregce): Consider dropping this phase and passing on-the-fly target / exec configs as
     // needed. This requires cleaning up the invalidation in SkyframeBuildView.setConfigurations.
     try (SilentCloseable c = Profiler.instance().profile("createConfigurations")) {
-      configurations = skyframeExecutor.createConfiguration(eventHandler, targetOptions, keepGoing);
+      topLevelConfig = skyframeExecutor.createConfiguration(eventHandler, targetOptions, keepGoing);
+      eventBus.post(new ConfigRequestedEvent(topLevelConfig, /* parentChecksum= */ null));
     }
     if (buildConfigurationsCreatedCallback != null) {
-      buildConfigurationsCreatedCallback.run(configurations);
+      buildConfigurationsCreatedCallback.run(topLevelConfig);
     }
     try (SilentCloseable c = Profiler.instance().profile("AnalysisUtils.getTargetsWithConfigs")) {
       topLevelTargetsWithConfigsResult =
           AnalysisUtils.getTargetsWithConfigs(
-              configurations,
+              topLevelConfig,
               labelToTargetMap.values(),
               eventHandler,
               ruleClassProvider,
               skyframeExecutor);
     }
 
-    skyframeBuildView.setConfigurations(
-        eventHandler, configurations, viewOptions.maxConfigChangesToShow);
+    skyframeBuildView.setConfiguration(
+        eventHandler, topLevelConfig, viewOptions.maxConfigChangesToShow);
 
-    eventBus.post(
-        new MakeEnvironmentEvent(configurations.getTargetConfiguration().getMakeEnvironment()));
-    eventBus.post(configurations.getTargetConfiguration().toBuildEvent());
+    eventBus.post(new MakeEnvironmentEvent(topLevelConfig.getMakeEnvironment()));
+    eventBus.post(topLevelConfig.toBuildEvent());
 
     Collection<TargetAndConfiguration> topLevelTargetsWithConfigs =
         topLevelTargetsWithConfigsResult.getTargetsAndConfigs();
@@ -274,6 +287,10 @@ public class BuildView {
     Multimap<Label, BuildConfigurationValue> byLabel = ArrayListMultimap.create();
     for (TargetAndConfiguration pair : topLevelTargetsWithConfigs) {
       byLabel.put(pair.getLabel(), pair.getConfiguration());
+      if (pair.getConfiguration() != null && !pair.getConfiguration().equals(topLevelConfig)) {
+        // Log top-level rule transitioned configurations.
+        eventBus.post(new ConfigRequestedEvent(pair.getConfiguration(), topLevelConfig.checksum()));
+      }
     }
     for (Target target : labelToTargetMap.values()) {
       eventBus.post(new TargetConfiguredEvent(target, byLabel.get(target.getLabel())));
@@ -360,17 +377,16 @@ public class BuildView {
     ImmutableList<AspectClass> aspectClasses = aspectClassesBuilder.build();
     ImmutableList.Builder<TopLevelAspectsKey> aspectsKeys = ImmutableList.builder();
     for (TargetAndConfiguration targetSpec : topLevelTargetsWithConfigs) {
-      BuildConfigurationValue configuration = targetSpec.getConfiguration();
+      BuildConfigurationValue config = targetSpec.getConfiguration();
       for (AspectClass aspectClass : aspectClasses) {
-        aspectConfigurations.put(
-            Pair.of(targetSpec.getLabel(), aspectClass.getName()), configuration);
+        aspectConfigurations.put(Pair.of(targetSpec.getLabel(), aspectClass.getName()), config);
       }
       // For invoking top-level aspects, use the top-level configuration for both the
       // aspect and the base target while the top-level configuration is untrimmed.
       if (!aspectClasses.isEmpty()) {
         aspectsKeys.add(
             AspectKeyCreator.createTopLevelAspectsKey(
-                aspectClasses, targetSpec.getLabel(), configuration, aspectsParameters));
+                aspectClasses, targetSpec.getLabel(), config, aspectsParameters));
       }
     }
 
@@ -395,23 +411,7 @@ public class BuildView {
                     }
                     return result;
                   });
-      if (!includeExecutionPhase) {
-        skyframeAnalysisResult =
-            skyframeBuildView.configureTargets(
-                eventHandler,
-                topLevelCtKeys,
-                aspectsKeys.build(),
-                memoizedConfigurationLookupSupplier,
-                topLevelOptions,
-                eventBus,
-                bugReporter,
-                keepGoing,
-                loadingPhaseThreads,
-                viewOptions.strictConflictChecks,
-                checkForActionConflicts,
-                viewOptions.cpuHeavySkyKeysThreadPoolSize);
-        setArtifactRoots(skyframeAnalysisResult.getPackageRoots());
-      } else {
+      if (includeExecutionPhase) {
         skyframeExecutor.setExtraActionFilter(viewOptions.extraActionFilter);
         skyframeExecutor.setRuleContextConstraintSemantics(
             (RuleContextConstraintSemantics) ruleClassProvider.getConstraintSemantics());
@@ -432,14 +432,35 @@ public class BuildView {
                 bugReporter,
                 Preconditions.checkNotNull(resourceManager), // non-null for skymeld.
                 Preconditions.checkNotNull(buildResultListener), // non-null for skymeld.
+                (configuredTargets, allTargetsToTest) ->
+                    memoizedGetCoverageArtifactsHelper(
+                        configuredTargets, allTargetsToTest, eventHandler, eventBus, loadingResult),
                 keepGoing,
-                viewOptions.strictConflictChecks,
+                skipIncompatibleExplicitTargets,
+                targetOptions.get(CoreOptions.class).strictConflictChecks,
                 checkForActionConflicts,
-                loadingPhaseThreads,
-                viewOptions.cpuHeavySkyKeysThreadPoolSize,
-                mergedPhasesExecutionJobsCount,
-                /*shouldDiscardAnalysisCache=*/ viewOptions.discardAnalysisCache
-                    || !skyframeExecutor.tracksStateForIncrementality());
+                viewOptions.extraActionTopLevelOnly,
+                executors,
+                /* shouldDiscardAnalysisCache= */ viewOptions.discardAnalysisCache
+                    || !skyframeExecutor.tracksStateForIncrementality(),
+                buildDriverKeyTestContext,
+                skymeldAnalysisOverlapPercentage);
+      } else {
+        skyframeAnalysisResult =
+            skyframeBuildView.configureTargets(
+                eventHandler,
+                labelToTargetMap,
+                topLevelCtKeys,
+                aspectsKeys.build(),
+                memoizedConfigurationLookupSupplier,
+                topLevelOptions,
+                eventBus,
+                bugReporter,
+                keepGoing,
+                executors,
+                targetOptions.get(CoreOptions.class).strictConflictChecks,
+                checkForActionConflicts);
+        setArtifactRoots(skyframeAnalysisResult.getPackageRoots());
       }
     } finally {
       skyframeBuildView.clearInvalidatedActionLookupKeys();
@@ -464,14 +485,14 @@ public class BuildView {
               eventHandler,
               eventBus,
               loadingResult,
-              configurations,
+              topLevelConfig,
               topLevelOptions,
               viewOptions,
               skyframeAnalysisResult,
-              /*targetsToSkip=*/ ImmutableSet.of(),
-              /*labelToTargetMap=*/ labelToTargetMap,
-              topLevelTargetsWithConfigsResult,
-              /*includeExecutionPhase=*/ true);
+              /* targetsToSkip= */ ImmutableSet.of(),
+              /* labelToTargetMap= */ labelToTargetMap,
+              topLevelTargetsWithConfigsResult.hasError(),
+              /* includeExecutionPhase= */ true);
     } else {
       ImmutableSet<ConfiguredTarget> targetsToSkip = ImmutableSet.of();
       if (reportIncompatibleTargets) {
@@ -484,7 +505,10 @@ public class BuildView {
 
         PlatformRestrictionsResult platformRestrictions =
             topLevelConstraintSemantics.checkPlatformRestrictions(
-                skyframeAnalysisResult.getConfiguredTargets(), explicitTargetPatterns, keepGoing);
+                skyframeAnalysisResult.getConfiguredTargets(),
+                explicitTargetPatterns,
+                keepGoing,
+                skipIncompatibleExplicitTargets);
 
         if (!platformRestrictions.targetsWithErrors().isEmpty()) {
           // If there are any errored targets (e.g. incompatible targets that are explicitly
@@ -507,14 +531,14 @@ public class BuildView {
               eventHandler,
               eventBus,
               loadingResult,
-              configurations,
+              topLevelConfig,
               topLevelOptions,
               viewOptions,
               skyframeAnalysisResult,
               targetsToSkip,
               labelToTargetMap,
-              topLevelTargetsWithConfigsResult,
-              /*includeExecutionPhase=*/ false);
+              topLevelTargetsWithConfigsResult.hasError(),
+              /* includeExecutionPhase= */ false);
     }
     logger.atInfo().log("Finished analysis");
     return result;
@@ -532,13 +556,13 @@ public class BuildView {
       ExtendedEventHandler eventHandler,
       EventBus eventBus,
       TargetPatternPhaseValue loadingResult,
-      BuildConfigurationCollection configurations,
+      BuildConfigurationValue configuration,
       TopLevelArtifactContext topLevelOptions,
       AnalysisOptions viewOptions,
       SkyframeAnalysisResult skyframeAnalysisResult,
       Set<ConfiguredTarget> targetsToSkip,
       ImmutableMap<Label, Target> labelToTargetMap,
-      TopLevelTargetsAndConfigsResult topLevelTargetsWithConfigs,
+      boolean hasTopLevelTargetsWithConfigurationError,
       boolean includeExecutionPhase)
       throws InterruptedException {
     Set<Label> testsToRun = loadingResult.getTestsToRunLabels();
@@ -564,27 +588,10 @@ public class BuildView {
         viewOptions, configuredTargets, aspects, artifactsToBuild, eventHandler);
 
     // Coverage
-    NestedSet<Artifact> baselineCoverageArtifacts =
-        getBaselineCoverageArtifacts(configuredTargets, artifactsToBuild);
-    if (coverageReportActionFactory != null) {
-      CoverageReportActionsWrapper actionsWrapper;
-      actionsWrapper =
-          coverageReportActionFactory.createCoverageReportActionsWrapper(
-              eventHandler,
-              eventBus,
-              directories,
-              allTargetsToTest,
-              baselineCoverageArtifacts,
-              getArtifactFactory(),
-              skyframeExecutor.getActionKeyContext(),
-              CoverageReportValue.COVERAGE_REPORT_KEY,
-              loadingResult.getWorkspaceName());
-      if (actionsWrapper != null) {
-        Actions.GeneratingActions actions = actionsWrapper.getActions();
-        skyframeExecutor.injectCoverageReportData(actions);
-        actionsWrapper.getCoverageOutputs().forEach(artifactsToBuild::add);
-      }
-    }
+    artifactsToBuild.addAll(
+        memoizedGetCoverageArtifactsHelper(
+            configuredTargets, allTargetsToTest, eventHandler, eventBus, loadingResult));
+
     // TODO(cparsons): If extra actions are ever removed, this filtering step can probably be
     //  removed as well: the only concern would be action conflicts involving coverage artifacts,
     //  which seems far-fetched.
@@ -618,12 +625,12 @@ public class BuildView {
 
     FailureDetail failureDetail =
         createAnalysisFailureDetail(
-            loadingResult, skyframeAnalysisResult, topLevelTargetsWithConfigs);
+            loadingResult, skyframeAnalysisResult, hasTopLevelTargetsWithConfigurationError);
     if (includeExecutionPhase) {
       SkyframeAnalysisAndExecutionResult skyframeAnalysisAndExecutionResult =
           (SkyframeAnalysisAndExecutionResult) skyframeAnalysisResult;
       return new AnalysisAndExecutionResult(
-          configurations,
+          configuration,
           ImmutableSet.copyOf(configuredTargets),
           aspects,
           allTargetsToTest == null ? null : ImmutableSet.copyOf(allTargetsToTest),
@@ -636,7 +643,7 @@ public class BuildView {
           exclusiveIfLocalTests,
           topLevelOptions,
           loadingResult.getWorkspaceName(),
-          topLevelTargetsWithConfigs.getTargetsAndConfigs());
+          skyframeAnalysisResult.getTargetsWithConfiguration());
     }
 
     WalkableGraph graph = skyframeAnalysisResult.getWalkableGraph();
@@ -652,7 +659,9 @@ public class BuildView {
                 ((Artifact.DerivedArtifact) artifact).getGeneratingActionKey();
             ActionLookupValue val;
             try {
-              val = (ActionLookupValue) graph.getValue(generatingActionKey.getActionLookupKey());
+              val =
+                  (ActionLookupValue)
+                      graph.getValue(generatingActionKey.getActionLookupKey().toKey());
             } catch (InterruptedException e) {
               throw new IllegalStateException(
                   "Interruption not expected from this graph: " + generatingActionKey, e);
@@ -666,7 +675,7 @@ public class BuildView {
           }
         };
     return new AnalysisResult(
-        configurations,
+        configuration,
         ImmutableSet.copyOf(configuredTargets),
         aspects,
         allTargetsToTest == null ? null : ImmutableSet.copyOf(allTargetsToTest),
@@ -680,7 +689,7 @@ public class BuildView {
         topLevelOptions,
         skyframeAnalysisResult.getPackageRoots(),
         loadingResult.getWorkspaceName(),
-        topLevelTargetsWithConfigs.getTargetsAndConfigs());
+        skyframeAnalysisResult.getTargetsWithConfiguration());
   }
 
   /**
@@ -691,7 +700,7 @@ public class BuildView {
   public static FailureDetail createAnalysisFailureDetail(
       TargetPatternPhaseValue loadingResult,
       @Nullable SkyframeAnalysisResult skyframeAnalysisResult,
-      @Nullable TopLevelTargetsAndConfigsResult topLevelTargetsAndConfigs) {
+      boolean hasTopLevelTargetsWithConfigurationError) {
     if (loadingResult.hasError()) {
       return FailureDetail.newBuilder()
           .setMessage("command succeeded, but there were errors parsing the target pattern")
@@ -705,7 +714,7 @@ public class BuildView {
           .setAnalysis(Analysis.newBuilder().setCode(Analysis.Code.GENERIC_LOADING_PHASE_FAILURE))
           .build();
     }
-    if (topLevelTargetsAndConfigs != null && topLevelTargetsAndConfigs.hasError()) {
+    if (hasTopLevelTargetsWithConfigurationError) {
       return FailureDetail.newBuilder()
           .setMessage("command succeeded, but top level configurations could not be created")
           .setBuildConfiguration(
@@ -733,13 +742,11 @@ public class BuildView {
   }
 
   private static NestedSet<Artifact> getBaselineCoverageArtifacts(
-      Collection<ConfiguredTarget> configuredTargets,
-      ImmutableSet.Builder<Artifact> artifactsToBuild) {
+      Collection<ConfiguredTarget> configuredTargets) {
     NestedSetBuilder<Artifact> baselineCoverageArtifacts = NestedSetBuilder.stableOrder();
     for (ConfiguredTarget target : configuredTargets) {
       InstrumentedFilesInfo provider = target.get(InstrumentedFilesInfo.STARLARK_CONSTRUCTOR);
       if (provider != null) {
-        artifactsToBuild.addAll(provider.getBaselineCoverageArtifacts().toList());
         baselineCoverageArtifacts.addTransitive(provider.getBaselineCoverageArtifacts());
       }
     }
@@ -819,7 +826,7 @@ public class BuildView {
     // might have injected.
     for (Artifact.DerivedArtifact artifact :
         provider.getTransitiveExtraActionArtifacts().toList()) {
-      ActionLookupKey owner = artifact.getArtifactOwner();
+      ActionLookupKeyOrProxy owner = artifact.getArtifactOwner();
       if (owner instanceof AspectKey) {
         if (aspectClasses.contains(((AspectKey) owner).getAspectClass())) {
           artifacts.add(artifact);
@@ -875,10 +882,10 @@ public class BuildView {
             InterruptedException;
   }
 
-  /** The callback for when BuildConfigurationCollection is available. */
+  /** The callback for when BuildConfigurationValue is available. */
   @FunctionalInterface
   public interface BuildConfigurationsCreated {
-    void run(BuildConfigurationCollection buildConfigurationCollection);
+    void run(BuildConfigurationValue buildConfiguration);
   }
 
   /**
@@ -889,5 +896,41 @@ public class BuildView {
     if (Thread.interrupted()) {
       throw new InterruptedException();
     }
+  }
+
+  private ImmutableSet<Artifact> memoizedGetCoverageArtifactsHelper(
+      Set<ConfiguredTarget> configuredTargets,
+      Set<ConfiguredTarget> allTargetsToTest,
+      EventHandler eventHandler,
+      EventBus eventBus,
+      TargetPatternPhaseValue loadingResult)
+      throws InterruptedException {
+    if (memoizedCoverageArtifacts != null) {
+      return memoizedCoverageArtifacts;
+    }
+    ImmutableSet.Builder<Artifact> resultBuilder = ImmutableSet.builder();
+    // Coverage
+    NestedSet<Artifact> baselineCoverageArtifacts = getBaselineCoverageArtifacts(configuredTargets);
+    resultBuilder.addAll(baselineCoverageArtifacts.toList());
+
+    if (coverageReportActionFactory != null) {
+      CoverageReportActionsWrapper actionsWrapper =
+          coverageReportActionFactory.createCoverageReportActionsWrapper(
+              eventHandler,
+              eventBus,
+              directories,
+              allTargetsToTest,
+              baselineCoverageArtifacts,
+              getArtifactFactory(),
+              skyframeExecutor.getActionKeyContext(),
+              CoverageReportValue.COVERAGE_REPORT_KEY,
+              loadingResult.getWorkspaceName());
+      if (actionsWrapper != null) {
+        skyframeExecutor.injectCoverageReportData(actionsWrapper.getActions());
+        actionsWrapper.getCoverageOutputs().forEach(resultBuilder::add);
+      }
+    }
+    memoizedCoverageArtifacts = resultBuilder.build();
+    return memoizedCoverageArtifacts;
   }
 }

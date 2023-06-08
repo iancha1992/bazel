@@ -6,8 +6,8 @@ Book: /_book.yaml
 {% include "_buttons.html" %}
 
 Execution groups allow for multiple execution platforms within a single target.
-Each execution group has its own [toolchain](/docs/toolchains) dependencies and
-performs its own [toolchain resolution](/docs/toolchains#toolchain-resolution).
+Each execution group has its own [toolchain](/extending/toolchains) dependencies and
+performs its own [toolchain resolution](/extending/toolchains#toolchain-resolution).
 
 ## Background {:#background}
 
@@ -25,7 +25,7 @@ like linking in C++ builds without over-allocating to less demanding tasks.
 ## Defining execution groups {:#defining-exec-groups}
 
 During rule definition, rule authors can
-[declare](/rules/lib/globals#exec_group)
+[declare](/rules/lib/globals/bzl#exec_group)
 a set of execution groups. On each execution group, the rule author can specify
 everything needed to select an execution platform for that execution group,
 namely any constraints via `exec_compatible_with` and toolchain types via
@@ -52,9 +52,9 @@ my_rule = rule(
 
 In the code snippet above, you can see that tool dependencies can also specify
 transition for an exec group using the
-[`cfg`](/rules/lib/attr#label)
+[`cfg`](/rules/lib/toplevel/attr#label)
 attribute param and the
-[`config`](/rules/lib/config)
+[`config`](/rules/lib/toplevel/config)
 module. The module exposes an `exec` function which takes a single string
 parameter which is the name of the exec group for which the dependency should be
 built.
@@ -62,55 +62,13 @@ built.
 As on native rules, the `test` execution group is present by default on Starlark
 test rules.
 
-### Execution group inheritance {:#exec-group-inheritance}
-
-In addition to defining its own constraints and toolchains, a new execution
-group can declare that it wants to inherit from the rule's default execution
-group, by passing the `copy_from_rule = True` parameter. It is an error to set
-`copy_from_rule` to true and to also pass `exec_compatible_with` or
-`toolchains`.
-
-An execution group that inherits from the default execution group copies
-constraints, toolchains, and execution properties from the default. This
-includes constraints and execution properties set on the target level, not just
-those specified by the rule itself. In other words, given the following:
-
-```python
-# foo.bzl
-my_rule = rule(
-    _impl,
-    exec_groups = {
-        “copied”: exec_group(
-            copy_from_rule = True,
-            # This will inherit exec_compatible_with and toolchains.
-            # Setting them here directly would be an error, however.
-        ),
-    },
-    toolchains = ["//foo_tools:toolchain_type"],
-    exec_compatible_with = ["@platforms//os:linux"],
-)
-
-# BUILD
-
-my_rule(
-    name = "demo",
-    exec_compatible_with = [":local_constraint"],
-)
-```
-
-The `copied` execution group for the configured target `demo` will include all
-of:
-- `//fool_tools:toolchain_type`
-- `@platforms//os:linux`
-- `:local_constraint`
-
 ## Accessing execution groups {:#accessing-exec-groups}
 
 In the rule implementation, you can declare that actions should be run on the
 execution platform of an execution group. You can do this by using the `exec_group`
 param of action generating methods, specifically [`ctx.actions.run`]
-(/rules/lib/actions#run) and
-[`ctx.actions.run_shell`](/rules/lib/actions#run_shell).
+(/rules/lib/builtins/actions#run) and
+[`ctx.actions.run_shell`](/rules/lib/builtins/actions#run_shell).
 
 ```python
 # foo.bzl
@@ -122,7 +80,7 @@ def _impl(ctx):
   )
 ```
 
-Rule authors will also be able to access the [resolved toolchains](/docs/toolchains#toolchain-resolution)
+Rule authors will also be able to access the [resolved toolchains](/extending/toolchains#toolchain-resolution)
 of execution groups, similarly to how you
 can access the resolved toolchain of a target:
 
@@ -174,36 +132,6 @@ The following execution groups are available for actions defined by native rules
 
 * `test`: Test runner actions.
 * `cpp_link`: C++ linking actions.
-
-### Creating exec groups to set exec properties {:#creating-exec-groups-for-exec-properties}
-
-Sometimes you want to use an exec group to give specific actions different exec
-properties but don't actually want different toolchains or constraints than the
-rule. For these situations, you can create exec groups using the `copy_from_rule`
-parameter:
-
-```python
-# foo.bzl
-
-# Creating an exec group with `copy_from_rule=True` is the same as explicitly
-# setting the exec group's toolchains and constraints to the same values as the
-# rule's respective parameters.
-my_rule = rule(
-    _impl,
-    exec_compatible_with = ["@platforms//os:linux"],
-    toolchains = ["//foo:toolchain_type"],
-    exec_groups = {
-        # The following two groups have the same toolchains and constraints:
-        “foo”: exec_group(copy_from_rule = True),
-        "bar": exec_group(
-            exec_compatible_with = ["@platforms//os:linux"],
-            toolchains = ["//foo:toolchain_type"],
-        ),
-    },
-)
-
-#
-```
 
 ### Execution groups and platform execution properties {:#platform-execution-properties}
 

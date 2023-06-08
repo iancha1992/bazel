@@ -30,6 +30,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import com.google.common.eventbus.Subscribe;
 import com.google.common.eventbus.SubscriberExceptionContext;
 import com.google.common.eventbus.SubscriberExceptionHandler;
 import com.google.devtools.build.lib.actions.Action;
@@ -46,13 +47,13 @@ import com.google.devtools.build.lib.analysis.ServerDirectories;
 import com.google.devtools.build.lib.analysis.TopLevelArtifactContext;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.WorkspaceStatusAction;
-import com.google.devtools.build.lib.analysis.config.BuildConfigurationCollection;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkTransition.TransitionException;
 import com.google.devtools.build.lib.analysis.util.AnalysisMock;
 import com.google.devtools.build.lib.analysis.util.AnalysisTestUtil;
 import com.google.devtools.build.lib.analysis.util.AnalysisTestUtil.DummyWorkspaceStatusActionContext;
+import com.google.devtools.build.lib.authandtls.credentialhelper.CredentialModule;
 import com.google.devtools.build.lib.bazel.BazelRepositoryModule;
 import com.google.devtools.build.lib.bugreport.BugReport;
 import com.google.devtools.build.lib.bugreport.BugReporter;
@@ -61,6 +62,7 @@ import com.google.devtools.build.lib.bugreport.CrashContext;
 import com.google.devtools.build.lib.buildtool.BuildRequest;
 import com.google.devtools.build.lib.buildtool.BuildResult;
 import com.google.devtools.build.lib.buildtool.BuildTool;
+import com.google.devtools.build.lib.buildtool.buildevent.BuildStartingEvent;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
@@ -104,6 +106,7 @@ import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue.Injected;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
+import com.google.devtools.build.lib.skyframe.SkymeldModule;
 import com.google.devtools.build.lib.skyframe.util.SkyframeExecutorTestUtils;
 import com.google.devtools.build.lib.standalone.StandaloneModule;
 import com.google.devtools.build.lib.testutil.TestConstants;
@@ -126,10 +129,12 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.lib.vfs.util.FileSystems;
 import com.google.devtools.build.lib.worker.WorkerModule;
+import com.google.devtools.build.skyframe.NotifyingHelper;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsParsingResult;
 import com.google.errorprone.annotations.FormatMethod;
+import com.google.errorprone.annotations.Keep;
 import java.io.IOException;
 import java.lang.Thread.UncaughtExceptionHandler;
 import java.util.ArrayList;
@@ -249,6 +254,34 @@ public abstract class BuildIntegrationTestCase {
   }
 
   /**
+   * Lazily injects the given listener at the start of the next build.
+   *
+   * <p>Injecting the listener immediately would reach the <em>current</em> evaluator, but the next
+   * build may create a new evaluator, which happens when {@link
+   * com.google.devtools.build.lib.skyframe.SequencedSkyframeExecutor} is not tracking incremental
+   * state.
+   */
+  public final void injectListenerAtStartOfNextBuild(NotifyingHelper.Listener listener) {
+    getRuntimeWrapper()
+        .registerSubscriber(
+            new Object() {
+              private boolean injected = false;
+
+              @Subscribe
+              @Keep
+              void buildStarting(@SuppressWarnings("unused") BuildStartingEvent event) {
+                if (!injected) {
+                  getSkyframeExecutor()
+                      .getEvaluator()
+                      .injectGraphTransformerForTesting(
+                          NotifyingHelper.makeNotifyingTransformer(listener));
+                  injected = true;
+                }
+              }
+            });
+  }
+
+  /**
    * Creates an uncaught exception handler to be used in {@link
    * Thread#setDefaultUncaughtExceptionHandler}.
    *
@@ -271,6 +304,9 @@ public abstract class BuildIntegrationTestCase {
   }
 
   protected void createRuntimeWrapper() throws Exception {
+    if (runtimeWrapper != null) {
+      cleanupInterningPools();
+    }
     runtimeWrapper =
         new BlazeRuntimeWrapper(
             events,
@@ -317,6 +353,11 @@ public abstract class BuildIntegrationTestCase {
   protected void runPriorToBeforeMethods() throws Exception {
     // Allows tests such as SkyframeIntegrationInvalidationTest to execute code before all @Before
     // methods are being run.
+  }
+
+  @After
+  public final void cleanupInterningPools() {
+    getSkyframeExecutor().getEvaluator().cleanupInterningPools();
   }
 
   @After
@@ -530,7 +571,9 @@ public abstract class BuildIntegrationTestCase {
             .addBlazeModule(new BuildIntegrationTestCommandsModule())
             .addBlazeModule(new OutputFilteringModule())
             .addBlazeModule(connectivityModule)
-            .addBlazeModule(getMockBazelRepositoryModule());
+            .addBlazeModule(new SkymeldModule())
+            .addBlazeModule(getMockBazelRepositoryModule())
+            .addBlazeModule(new CredentialModule());
     getSpawnModules().forEach(builder::addBlazeModule);
     builder
         .addBlazeModule(getBuildInfoModule())
@@ -573,8 +616,6 @@ public abstract class BuildIntegrationTestCase {
     runtimeWrapper.addOptions(TestConstants.PRODUCT_SPECIFIC_FLAGS);
     // TODO(rosica): Remove this once g3 is migrated.
     runtimeWrapper.addOptions("--noincompatible_use_specific_tool_files");
-    // TODO(rosica): Remove this once g3 is migrated.
-    runtimeWrapper.addOptions("--noincompatible_make_thinlto_command_lines_standalone");
   }
 
   protected void resetOptions() {
@@ -665,8 +706,13 @@ public abstract class BuildIntegrationTestCase {
     return existingConfiguredTarget;
   }
 
-  protected BuildConfigurationCollection getConfigurationCollection() {
-    return runtimeWrapper.getConfigurationCollection();
+  protected BuildConfigurationValue getConfiguration() {
+    return runtimeWrapper.getConfiguration();
+  }
+
+  protected final BuildConfigurationValue getConfiguration(ConfiguredTarget ct) {
+    return getSkyframeExecutor()
+        .getConfiguration(NullEventHandler.INSTANCE, ct.getConfigurationKey());
   }
 
   /**
@@ -678,8 +724,7 @@ public abstract class BuildIntegrationTestCase {
    * falls back to the base top-level configuration.
    */
   protected BuildConfigurationValue getTargetConfiguration() {
-    BuildConfigurationValue baseConfiguration =
-        getConfigurationCollection().getTargetConfiguration();
+    BuildConfigurationValue baseConfiguration = getConfiguration();
     BuildResult result = getResult();
     if (result == null) {
       return baseConfiguration;
@@ -695,8 +740,8 @@ public abstract class BuildIntegrationTestCase {
     return Iterables.getOnlyElement(topLevelTargetConfigurations);
   }
 
-  protected BuildConfigurationValue getHostConfiguration() {
-    return getConfigurationCollection().getHostConfiguration();
+  protected BuildConfigurationValue getExecConfiguration() throws Exception {
+    return runtimeWrapper.getExecConfiguration();
   }
 
   protected TopLevelArtifactContext getTopLevelArtifactContext() {
@@ -888,7 +933,7 @@ public abstract class BuildIntegrationTestCase {
    * <p>The returned set preserves the order of the input.
    */
   protected Set<String> artifactsToStrings(NestedSet<Artifact> artifacts) {
-    return AnalysisTestUtil.artifactsToStrings(getConfigurationCollection(), artifacts.toList());
+    return AnalysisTestUtil.artifactsToStrings(getConfiguration(), artifacts.toList());
   }
 
   protected ActionsTestUtil actionsTestUtil() {
@@ -901,11 +946,6 @@ public abstract class BuildIntegrationTestCase {
 
   protected NestedSet<Artifact> getFilesToBuild(TransitiveInfoCollection target) {
     return target.getProvider(FileProvider.class).getFilesToBuild();
-  }
-
-  protected final BuildConfigurationValue getConfiguration(ConfiguredTarget ct) {
-    return getSkyframeExecutor()
-        .getConfiguration(NullEventHandler.INSTANCE, ct.getConfigurationKey());
   }
 
   /** Returns the BuildRequest of the last call to buildTarget(). */
@@ -1023,7 +1063,7 @@ public abstract class BuildIntegrationTestCase {
     }
 
     @Override
-    public synchronized void sendNonFatalBugReport(Exception exception) {
+    public synchronized void sendNonFatalBugReport(Throwable exception) {
       exceptions.add(exception);
     }
 

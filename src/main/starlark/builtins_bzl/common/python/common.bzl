@@ -18,17 +18,26 @@ load(
     ":common/python/providers.bzl",
     "PyInfo",
 )
+load(
+    ":common/python/semantics.bzl",
+    "NATIVE_RULES_MIGRATION_FIX_CMD",
+    "NATIVE_RULES_MIGRATION_HELP_URL",
+    "TOOLS_REPO",
+)
 
-py_builtins = _builtins.internal.py_builtins
-platform_common = _builtins.toplevel.platform_common
-CcInfo = _builtins.toplevel.CcInfo
-cc_common = _builtins.toplevel.cc_common
-coverage_common = _builtins.toplevel.coverage_common
+_testing = _builtins.toplevel.testing
+_platform_common = _builtins.toplevel.platform_common
+_coverage_common = _builtins.toplevel.coverage_common
+_py_builtins = _builtins.internal.py_builtins
+
+TOOLCHAIN_TYPE = "@" + TOOLS_REPO + "//tools/python:toolchain_type"
 
 # Extensions without the dot
-PYTHON_SOURCE_EXTENSIONS = ["py"]
+_PYTHON_SOURCE_EXTENSIONS = ["py"]
 
-# Todo: rename this to "binary" and split off library-parts
+# NOTE: Must stay in sync with the value used in rules_python
+_MIGRATION_TAG = "__PYTHON_RULES_MIGRATION_DO_NOT_USE_WILL_BREAK__"
+
 def create_binary_semantics_struct(
         *,
         create_executable,
@@ -55,7 +64,7 @@ def create_binary_semantics_struct(
 
     Args:
         create_executable: Callable; creates a binary's executable output. See
-            py_executable.bzl#py_executable_impl for details.
+            py_executable.bzl#py_executable_base_impl for details.
         get_cc_details_for_binary: Callable that returns a `CcDetails` struct; see
             `create_cc_detail_struct`.
         get_central_uncachable_version_file: Callable that returns an optional
@@ -73,8 +82,9 @@ def create_binary_semantics_struct(
             of additional environment variable to pass to build data generation.
         get_interpreter_path: Callable that returns an optional string, which is
             the path to the Python interpreter to use for running the binary.
-        get_imports: Callable that returns a depset of the target's import
-            paths.
+        get_imports: Callable that returns a list of the target's import
+            paths (from the `imports` attribute, so just the target's own import
+            path strings, not from dependencies).
         get_native_deps_dso_name: Callable that returns a string, which is the
             basename (with extension) of the native deps DSO library.
         get_native_deps_user_link_flags: Callable that returns a list of strings,
@@ -115,6 +125,31 @@ def create_binary_semantics_struct(
         should_include_build_data = should_include_build_data,
     )
 
+def create_library_semantics_struct(
+        *,
+        get_cc_info_for_library,
+        get_imports,
+        maybe_precompile):
+    """Create a `LibrarySemantics` struct.
+
+    Call this instead of a raw call to `struct(...)`; it'll help ensure all
+    the necessary functions are being correctly provided.
+
+    Args:
+        get_cc_info_for_library: Callable that returns a CcInfo for the library;
+            see py_library_impl for arg details.
+        get_imports: Callable; see create_binary_semantics_struct.
+        maybe_precompile: Callable; see create_binary_semantics_struct.
+    Returns:
+        a `LibrarySemantics` struct.
+    """
+    return struct(
+        # keep sorted
+        get_cc_info_for_library = get_cc_info_for_library,
+        get_imports = get_imports,
+        maybe_precompile = maybe_precompile,
+    )
+
 def create_cc_details_struct(
         *,
         cc_info_for_propagating,
@@ -148,6 +183,25 @@ def create_cc_details_struct(
         cc_info_with_extra_link_time_libraries = cc_info_with_extra_link_time_libraries,
         extra_runfiles = extra_runfiles,
         cc_toolchain = cc_toolchain,
+    )
+
+def create_executable_result_struct(*, extra_files_to_build, output_groups):
+    """Creates a `CreateExecutableResult` struct.
+
+    This is the return value type of the semantics create_executable function.
+
+    Args:
+        extra_files_to_build: depset of File; additional files that should be
+            included as default outputs.
+        output_groups: dict[str, depset[File]]; additional output groups that
+            should be returned.
+
+    Returns:
+        A `CreateExecutableResult` struct.
+    """
+    return struct(
+        extra_files_to_build = extra_files_to_build,
+        output_groups = output_groups,
     )
 
 def union_attrs(*attr_dicts, allow_none = False):
@@ -207,6 +261,13 @@ def filter_to_py_srcs(srcs):
     # elsewhere, as there may be others. e.g. Bazel recognizes .py3
     # as a valid extension.
     return [f for f in srcs if f.extension == "py"]
+
+def collect_imports(ctx, semantics):
+    return depset(direct = semantics.get_imports(ctx), transitive = [
+        dep[PyInfo].imports
+        for dep in ctx.attr.deps
+        if PyInfo in dep
+    ])
 
 def collect_runfiles(ctx, files):
     """Collects the necessary files from the rule's context.
@@ -290,6 +351,8 @@ def create_py_info(ctx, *, direct_sources, imports):
         necessary for deprecated extra actions support).
     """
     uses_shared_libraries = False
+    has_py2_only_sources = ctx.attr.srcs_version in ("PY2", "PY2ONLY")
+    has_py3_only_sources = ctx.attr.srcs_version in ("PY3", "PY3ONLY")
     transitive_sources_depsets = []  # list of depsets
     transitive_sources_files = []  # list of Files
     for target in ctx.attr.deps:
@@ -298,6 +361,8 @@ def create_py_info(ctx, *, direct_sources, imports):
             info = target[PyInfo]
             transitive_sources_depsets.append(info.transitive_sources)
             uses_shared_libraries = uses_shared_libraries or info.uses_shared_libraries
+            has_py2_only_sources = has_py2_only_sources or info.has_py2_only_sources
+            has_py3_only_sources = has_py3_only_sources or info.has_py3_only_sources
         else:
             # TODO(b/228692666): Remove this once non-PyInfo targets are no
             # longer supported in `deps`.
@@ -343,25 +408,40 @@ def create_py_info(ctx, *, direct_sources, imports):
         # NOTE: This isn't strictly correct, but with Python 2 gone,
         # the srcs_version logic is largely defunct, so shouldn't matter in
         # practice.
-        has_py2_only_sources = False,
-        has_py3_only_sources = False,
+        has_py2_only_sources = has_py2_only_sources,
+        has_py3_only_sources = has_py3_only_sources,
         uses_shared_libraries = uses_shared_libraries,
     )
     return py_info, deps_transitive_sources
 
 def create_instrumented_files_info(ctx):
-    return coverage_common.instrumented_files_info(
+    return _coverage_common.instrumented_files_info(
         ctx,
         source_attributes = ["srcs"],
         dependency_attributes = ["deps", "data"],
-        extensions = PYTHON_SOURCE_EXTENSIONS,
+        extensions = _PYTHON_SOURCE_EXTENSIONS,
     )
 
-def create_output_group_info(transitive_sources):
+def create_output_group_info(transitive_sources, extra_groups):
     return OutputGroupInfo(
         compilation_prerequisites_INTERNAL_ = transitive_sources,
         compilation_outputs = transitive_sources,
+        **extra_groups
     )
+
+def maybe_add_test_execution_info(providers, ctx):
+    """Adds ExecutionInfo, if necessary for proper test execution.
+
+    Args:
+        providers: Mutable list of providers; may have ExecutionInfo
+            provider appended.
+        ctx: Rule ctx.
+    """
+
+    # When built for Apple platforms, require the execution to be on a Mac.
+    # TODO(b/176993122): Remove when bazel automatically knows to run on darwin.
+    if target_platform_has_any_constraint(ctx, ctx.attr._apple_constraints):
+        providers.append(_testing.ExecutionInfo({"requires-darwin": ""}))
 
 _BOOL_TYPE = type(True)
 
@@ -379,7 +459,69 @@ def target_platform_has_any_constraint(ctx, constraints):
       True if target platform has at least one of the constraints.
     """
     for constraint in constraints:
-        constraint_value = constraint[platform_common.ConstraintValueInfo]
+        constraint_value = constraint[_platform_common.ConstraintValueInfo]
         if ctx.target_platform_has_constraint(constraint_value):
             return True
     return False
+
+def check_native_allowed(ctx):
+    """Check if the usage of the native rule is allowed.
+
+    Args:
+        ctx: rule context to check
+    """
+    if not ctx.fragments.py.disallow_native_rules:
+        return
+
+    if _MIGRATION_TAG in ctx.attr.tags:
+        return
+
+    # NOTE: The main repo name is empty in *labels*, but not in
+    # ctx.workspace_name
+    is_main_repo = not bool(ctx.label.workspace_name)
+    if is_main_repo:
+        check_label = ctx.label
+    else:
+        # package_group doesn't allow @repo syntax, so we work around that
+        # by prefixing external repos with a fake package path. This also
+        # makes it easy to enable or disable all external repos.
+        check_label = Label("@//__EXTERNAL_REPOS__/{workspace}/{package}".format(
+            workspace = ctx.label.workspace_name,
+            package = ctx.label.package,
+        ))
+    allowlist = ctx.attr._native_rules_allowlist
+    if allowlist:
+        allowed = ctx.attr._native_rules_allowlist.isAvailableFor(check_label)
+        allowlist_help = str(allowlist.label).replace("@//", "//")
+    else:
+        allowed = False
+        allowlist_help = ("no allowlist specified; all disallowed; specify one " +
+                          "with --python_native_rules_allowlist")
+    if not allowed:
+        if ctx.attr.generator_function:
+            generator = "{generator_function}(name={generator_name}) in {generator_location}".format(
+                generator_function = ctx.attr.generator_function,
+                generator_name = ctx.attr.generator_name,
+                generator_location = ctx.attr.generator_location,
+            )
+        else:
+            generator = "No generator (called directly in BUILD file)"
+
+        msg = (
+            "{target} not allowed to use native.{rule}\n" +
+            "Generated by: {generator}\n" +
+            "Allowlist: {allowlist}\n" +
+            "Migrate to using @rules_python, see {help_url}\n" +
+            "FIXCMD: {fix_cmd} --target={target} --rule={rule} " +
+            "--generator_name={generator_name} --location={generator_location}"
+        )
+        fail(msg.format(
+            target = str(ctx.label).replace("@//", "//"),
+            rule = _py_builtins.get_rule_name(ctx),
+            generator = generator,
+            allowlist = allowlist_help,
+            generator_name = ctx.attr.generator_name,
+            generator_location = ctx.attr.generator_location,
+            help_url = NATIVE_RULES_MIGRATION_HELP_URL,
+            fix_cmd = NATIVE_RULES_MIGRATION_FIX_CMD,
+        ))

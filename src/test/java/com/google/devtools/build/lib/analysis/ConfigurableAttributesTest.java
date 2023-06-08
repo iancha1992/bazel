@@ -13,6 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.lib.analysis;
 
+import static com.google.common.testing.GcFinalization.awaitClear;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.devtools.build.lib.packages.Attribute.attr;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
@@ -32,9 +33,12 @@ import com.google.devtools.build.lib.packages.NoSuchTargetException;
 import com.google.devtools.build.lib.packages.RuleClass.ToolchainResolutionMode;
 import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
+import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
+import com.google.devtools.build.lib.skyframe.SkyframeExecutorWrappingWalkableGraph;
 import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
 import com.google.devtools.build.lib.util.FileTypeSet;
 import java.io.IOException;
+import java.lang.ref.WeakReference;
 import java.util.Collection;
 import java.util.Set;
 import org.junit.Before;
@@ -152,7 +156,7 @@ public class ConfigurableAttributesTest extends BuildViewTestCase {
               (builder, env) ->
                   builder.add(
                       attr("dep", BuildType.LABEL)
-                          .value(Label.parseAbsoluteUnchecked("//foo:default"))
+                          .value(Label.parseCanonicalUnchecked("//foo:default"))
                           .allowedFileTypes(FileTypeSet.ANY_FILE)));
 
   private static final MockRule RULE_WITH_NO_PLATFORM =
@@ -642,7 +646,8 @@ public class ConfigurableAttributesTest extends BuildViewTestCase {
         "Illegal ambiguous match on configurable attribute \"srcs\" in //a:gen:\n"
             + "//conditions:dup1\n"
             + "//conditions:dup2\n"
-            + "Multiple matches are not allowed unless one is unambiguously more specialized.");
+            + "Multiple matches are not allowed unless one is unambiguously more specialized "
+            + "or they resolve to the same value.");
   }
 
   /**
@@ -686,6 +691,37 @@ public class ConfigurableAttributesTest extends BuildViewTestCase {
         /*expected:*/ ImmutableList.of("bin java/a/libmost_precise.jar"),
         /*not expected:*/ ImmutableList.of(
             "bin java/a/libgeneric.jar", "bin java/a/libprecise.jar"));
+  }
+
+  /** Tests that multiple matches are allowed for conditions where the value is the same. */
+  @Test
+  public void multipleMatchesSameValue() throws Exception {
+    reporter.removeHandler(failFastHandler); // Expect errors.
+    scratch.file(
+        "conditions/BUILD",
+        "config_setting(",
+        "    name = 'dup1',",
+        "    values = {'compilation_mode': 'opt'})",
+        "config_setting(",
+        "    name = 'dup2',",
+        "    values = {'define': 'foo=bar'})");
+    scratch.file(
+        "a/BUILD",
+        "genrule(",
+        "    name = 'gen',",
+        "    cmd = '',",
+        "    outs = ['gen.out'],",
+        "    srcs = select({",
+        "        '//conditions:dup1': ['a.in'],",
+        "        '//conditions:dup2': ['a.in'],",
+        "        '" + BuildType.Selector.DEFAULT_CONDITION_KEY + "': [':default.in'],",
+        "    }))");
+    checkRule(
+        "//a:gen",
+        "srcs",
+        ImmutableList.of("-c", "opt", "--define", "foo=bar"),
+        /*expected:*/ ImmutableList.of("src a/a.in"),
+        /*not expected:*/ ImmutableList.of("src a/default.in"));
   }
 
   /**
@@ -1426,7 +1462,7 @@ public class ConfigurableAttributesTest extends BuildViewTestCase {
   public void selectOnlyToolchainResolvingTargetsCanSelectDirectlyOnConstraints() throws Exception {
     // Tests select()ing directly on a constraint_value when the rule uses toolchain resolution
     // *only if it has a select()*. As of this test, alias() is the only rule that supports that
-    // (see Alias#useToolchainResolution(ToolchainResolutionMode.HAS_SELECT).
+    // (see Alias#useToolchainResolution(ToolchainResolutionMode.ENABLED_ONLY_FOR_COMMON_LOGIC).
     scratch.file(
         "conditions/BUILD",
         "constraint_setting(name = 'fruit')",
@@ -1536,7 +1572,7 @@ public class ConfigurableAttributesTest extends BuildViewTestCase {
   }
 
   @Test
-  public void publicVisibilityConfigSetting__noVisibilityEnforcement() throws Exception {
+  public void publicVisibilityConfigSetting_noVisibilityEnforcement() throws Exception {
     // Production builds default to private visibility, but BuildViewTestCase defaults to public.
     setPackageOptions("--default_visibility=private",
         "--incompatible_enforce_config_setting_visibility=false");
@@ -1894,5 +1930,72 @@ public class ConfigurableAttributesTest extends BuildViewTestCase {
         "--foo=b",
         /*expected:*/ ImmutableList.of("bin java/foo/libb.jar", "bin java/foo/libb2.jar"),
         /*not expected:*/ ImmutableList.of("bin java/foo/liba.jar", "bin java/foo/liba2.jar"));
+  }
+
+  @Test
+  public void proxyKeysAreRetained() throws Exception {
+    // This test case verifies that when a ProxyConfiguredTargetKey is created, it is retained.
+    scratch.file(
+        "conditions/BUILD",
+        "constraint_setting(name = 'animal')",
+        "constraint_value(name = 'manatee', constraint_setting = 'animal')",
+        "constraint_value(name = 'koala', constraint_setting = 'animal')",
+        "platform(",
+        "    name = 'manatee_platform',",
+        "    constraint_values = [':manatee'],",
+        ")",
+        "platform(",
+        "    name = 'koala_platform',",
+        "    constraint_values = [':koala'],",
+        ")");
+    scratch.file(
+        "check/BUILD",
+        "filegroup(name = 'adep', srcs = ['afile'])",
+        "filegroup(name = 'bdep', srcs = ['bfile'])",
+        "filegroup(name = 'hello',",
+        "    srcs = select({",
+        "        '//conditions:manatee': [':adep'],",
+        "        '//conditions:koala': [':bdep'],",
+        "    }))");
+
+    useConfiguration("--experimental_platforms=//conditions:manatee_platform");
+    ConfiguredTarget hello = getConfiguredTarget("//check:hello");
+
+    var koalaLabel = Label.parseCanonical("//conditions:koala");
+
+    // Shakes the interner to try to get any non-strongly reachable keys to fall out. This should
+    // cause the ProxyConfiguredTargetKey created for "//conditions:koala" to fall out if it's not
+    // otherwise retained.
+    //
+    // Creates and inserts a canary key into the interner that can be used to detect eviction of
+    // weak keys.
+    var canaryKey = new WeakReference<>(ConfiguredTargetKey.builder().setLabel(koalaLabel).build());
+    awaitClear(canaryKey);
+    // Once we get here we know that the canaryKey is no longer in the weak interner. Due to the
+    // collection properties of weak references, that implies the interner now has no weakly
+    // reachable keys at all.
+
+    // Since //conditions:koala is a ConfigCondition, so it would be requested by //check:hello
+    // using //check:hello's configuration.
+    var koalaOwner =
+        ConfiguredTargetKey.builder()
+            .setLabel(koalaLabel)
+            .setConfigurationKey(hello.getConfigurationKey())
+            .build();
+    // Uses a WalkableGraph lookup to ensure there is an existing //conditions:koala instance that
+    // was created using koalaOwner.
+    var walkableGraph = SkyframeExecutorWrappingWalkableGraph.of(skyframeExecutor);
+    var koala = (ConfiguredTargetValue) walkableGraph.getValue(koalaOwner.toKey());
+    assertThat(koala).isNotNull();
+
+    // constraint_value has a NoConfigTransition rule transition so a corresponding proxy key
+    // should exist.
+    ConfiguredTargetKey koalaKey =
+        ConfiguredTargetKey.builder()
+            .setLabel(koalaLabel)
+            .setConfigurationKey(koala.getConfiguredTarget().getConfigurationKey())
+            .build();
+    assertThat(koalaKey.isProxy()).isTrue();
+    assertThat(koalaKey.toKey()).isEqualTo(koalaOwner);
   }
 }

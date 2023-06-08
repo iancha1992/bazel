@@ -15,11 +15,13 @@
 package com.google.devtools.build.lib.sandbox;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.devtools.build.lib.sandbox.LinuxSandboxCommandLineBuilder.NetworkNamespace.NETNS_WITH_LOOPBACK;
+import static com.google.devtools.build.lib.sandbox.LinuxSandboxCommandLineBuilder.NetworkNamespace.NO_NETNS;
 import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.ImmutableSortedMap;
+import com.google.devtools.build.lib.sandbox.LinuxSandboxCommandLineBuilder.BindMount;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
@@ -87,6 +89,8 @@ public final class LinuxSandboxCommandLineBuilderTest {
 
     Duration timeout = Duration.ofSeconds(10);
     Duration killDelay = Duration.ofSeconds(2);
+
+    Path sandboxDebugPath = testFS.getPath("/debug.out");
     Path statisticsPath = testFS.getPath("/stats.out");
 
     Path workingDirectory = testFS.getPath("/all-work-and-no-play");
@@ -99,7 +103,6 @@ public final class LinuxSandboxCommandLineBuilderTest {
 
     boolean createNetworkNamespace = true;
     boolean useFakeHostname = true;
-    boolean useDebugMode = true;
 
     FileSystem fileSystem = new InMemoryFileSystem(DigestHashFunction.SHA256);
     Path workDir = fileSystem.getPath("/work");
@@ -123,12 +126,13 @@ public final class LinuxSandboxCommandLineBuilderTest {
 
     ImmutableSet<PathFragment> tmpfsDirectories = ImmutableSet.of(tmpfsDir1, tmpfsDir2);
 
-    ImmutableSortedMap<Path, Path> bindMounts =
-        ImmutableSortedMap.<Path, Path>naturalOrder()
-            .put(bindMountTarget1, bindMountSource1)
-            .put(bindMountTarget2, bindMountSource2)
-            .put(bindMountSameSourceAndTarget, bindMountSameSourceAndTarget)
-            .buildOrThrow();
+    ImmutableList<BindMount> bindMounts =
+        ImmutableList.of(
+            BindMount.of(bindMountSameSourceAndTarget, bindMountSameSourceAndTarget),
+            BindMount.of(bindMountTarget1, bindMountSource1),
+            BindMount.of(bindMountTarget2, bindMountSource2));
+
+    String cgroupsDir = "/sys/fs/cgroups/something";
 
     ImmutableList<String> expectedCommandLine =
         ImmutableList.<String>builder()
@@ -151,8 +155,9 @@ public final class LinuxSandboxCommandLineBuilderTest {
             .add("-H")
             .add("-N")
             .add("-U")
-            .add("-D")
+            .add("-D", sandboxDebugPath.getPathString())
             .add("-p")
+            .add("-C", cgroupsDir)
             .add("--")
             .addAll(commandArguments)
             .build();
@@ -168,12 +173,13 @@ public final class LinuxSandboxCommandLineBuilderTest {
             .setTmpfsDirectories(tmpfsDirectories)
             .setBindMounts(bindMounts)
             .setUseFakeHostname(useFakeHostname)
-            .setCreateNetworkNamespace(createNetworkNamespace)
+            .setCreateNetworkNamespace(createNetworkNamespace ? NETNS_WITH_LOOPBACK : NO_NETNS)
             .setUseFakeRoot(useFakeRoot)
             .setStatisticsPath(statisticsPath)
             .setUseFakeUsername(useFakeUsername)
-            .setUseDebugMode(useDebugMode)
+            .setSandboxDebugPath(sandboxDebugPath.getPathString())
             .setPersistentProcess(true)
+            .setCgroupsDir(cgroupsDir)
             .build();
 
     assertThat(commandLine).containsExactlyElementsIn(expectedCommandLine).inOrder();

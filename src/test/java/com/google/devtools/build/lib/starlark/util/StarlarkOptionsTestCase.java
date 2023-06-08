@@ -17,16 +17,17 @@ package com.google.devtools.build.lib.starlark.util;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
-import com.google.devtools.build.lib.events.StoredEventHandler;
 import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.pkgcache.LoadingOptions;
 import com.google.devtools.build.lib.pkgcache.PackageOptions;
+import com.google.devtools.build.lib.runtime.BlazeOptionHandler;
 import com.google.devtools.build.lib.runtime.ClientOptions;
 import com.google.devtools.build.lib.runtime.CommonCommandOptions;
 import com.google.devtools.build.lib.runtime.KeepGoingOption;
 import com.google.devtools.build.lib.runtime.StarlarkOptionsParser;
 import com.google.devtools.build.lib.runtime.UiOptions;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.common.options.OptionPriority.PriorityCategory;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsParsingResult;
@@ -56,15 +57,40 @@ public class StarlarkOptionsTestCase extends BuildViewTestCase {
                 Iterables.concat(
                     requiredOptionsClasses,
                     ruleClassProvider.getFragmentRegistry().getOptionsClasses()))
+            .skipStarlarkOptionPrefixes()
             .build();
     starlarkOptionsParser =
-        StarlarkOptionsParser.newStarlarkOptionsParserForTesting(
-            skyframeExecutor, reporter, PathFragment.EMPTY_FRAGMENT, optionsParser);
+        StarlarkOptionsParser.newStarlarkOptionsParser(
+            new BlazeOptionHandler.SkyframeExecutorTargetLoader(
+                skyframeExecutor, PathFragment.EMPTY_FRAGMENT, reporter),
+            optionsParser);
   }
 
   protected OptionsParsingResult parseStarlarkOptions(String options) throws Exception {
+    return parseStarlarkOptions(options, /* onlyStarlarkParser= */ false);
+  }
+
+  protected OptionsParsingResult parseStarlarkOptions(String options, boolean onlyStarlarkParser)
+      throws Exception {
+    List<String> asList = Arrays.asList(options.split(" "));
+    if (!onlyStarlarkParser) {
+      optionsParser.parse(asList);
+    }
+    starlarkOptionsParser.parseGivenArgs(asList);
+    return starlarkOptionsParser.getNativeOptionsParserFortesting();
+  }
+
+  protected OptionsParsingResult parseStarlarkOptions(
+      String commandLineOptions, String bazelrcOptions) throws Exception {
+    List<String> commandLineOptionsList = Arrays.asList(commandLineOptions.split(" "));
+    List<String> bazelrcOptionsList = Arrays.asList(bazelrcOptions.split(" "));
+    optionsParser.parse(PriorityCategory.COMMAND_LINE, /* source= */ null, commandLineOptionsList);
+    optionsParser.parse(PriorityCategory.RC_FILE, "fake.bazelrc", bazelrcOptionsList);
     starlarkOptionsParser.parseGivenArgs(
-        new StoredEventHandler(), Arrays.asList(options.split(" ")));
+        ImmutableList.<String>builder()
+            .addAll(commandLineOptionsList)
+            .addAll(bazelrcOptionsList)
+            .build());
     return starlarkOptionsParser.getNativeOptionsParserFortesting();
   }
 

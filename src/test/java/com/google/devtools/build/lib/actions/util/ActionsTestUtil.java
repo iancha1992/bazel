@@ -57,11 +57,12 @@ import com.google.devtools.build.lib.actions.BuildConfigurationEvent;
 import com.google.devtools.build.lib.actions.DiscoveredModulesPruner;
 import com.google.devtools.build.lib.actions.Executor;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
+import com.google.devtools.build.lib.actions.InputMetadataProvider;
 import com.google.devtools.build.lib.actions.MiddlemanType;
 import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.actions.PackageRootResolver;
 import com.google.devtools.build.lib.actions.ThreadStateReceiver;
-import com.google.devtools.build.lib.actions.cache.MetadataHandler;
+import com.google.devtools.build.lib.actions.cache.OutputMetadataStore;
 import com.google.devtools.build.lib.actions.cache.Protos.ActionCacheStatistics.MissDetail;
 import com.google.devtools.build.lib.actions.cache.Protos.ActionCacheStatistics.MissReason;
 import com.google.devtools.build.lib.actions.cache.VirtualActionInput;
@@ -78,6 +79,7 @@ import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.exec.SingleBuildFileCache;
+import com.google.devtools.build.lib.skyframe.ActionExecutionValue;
 import com.google.devtools.build.lib.skyframe.ActionTemplateExpansionValue;
 import com.google.devtools.build.lib.skyframe.ActionTemplateExpansionValue.ActionTemplateExpansionKey;
 import com.google.devtools.build.lib.skyframe.BuildConfigurationKey;
@@ -138,7 +140,7 @@ public final class ActionsTestUtil {
     this.actionGraph = actionGraph;
   }
 
-  private static final Label NULL_LABEL = Label.parseAbsoluteUnchecked("//null/action:owner");
+  private static final Label NULL_LABEL = Label.parseCanonicalUnchecked("//null/action:owner");
 
   public static ActionExecutionContext createContext(
       Executor executor,
@@ -146,15 +148,15 @@ public final class ActionsTestUtil {
       ActionKeyContext actionKeyContext,
       FileOutErr fileOutErr,
       Path execRoot,
-      MetadataHandler metadataHandler) {
+      OutputMetadataStore outputMetadataStore) {
     return createContext(
         executor,
         eventHandler,
         actionKeyContext,
         fileOutErr,
         execRoot,
-        metadataHandler,
-        /*clientEnv=*/ ImmutableMap.of());
+        outputMetadataStore,
+        /* clientEnv= */ ImmutableMap.of());
   }
 
   public static ActionExecutionContext createContext(
@@ -163,7 +165,7 @@ public final class ActionsTestUtil {
       ActionKeyContext actionKeyContext,
       FileOutErr fileOutErr,
       Path execRoot,
-      MetadataHandler metadataHandler,
+      OutputMetadataStore outputMetadataStore,
       Map<String, String> clientEnv) {
     return new ActionExecutionContext(
         executor,
@@ -171,16 +173,16 @@ public final class ActionsTestUtil {
             execRoot.getPathString(), execRoot.getFileSystem(), SyscallCache.NO_CACHE),
         ActionInputPrefetcher.NONE,
         actionKeyContext,
-        metadataHandler,
-        /*rewindingEnabled=*/ false,
+        outputMetadataStore,
+        /* rewindingEnabled= */ false,
         LostInputsCheck.NONE,
         fileOutErr,
         eventHandler,
         ImmutableMap.copyOf(clientEnv),
-        /*topLevelFilesets=*/ ImmutableMap.of(),
+        /* topLevelFilesets= */ ImmutableMap.of(),
         (artifact, output) -> {},
-        /*actionFileSystem=*/ null,
-        /*skyframeDepsResult=*/ null,
+        /* actionFileSystem= */ null,
+        /* skyframeDepsResult= */ null,
         DiscoveredModulesPruner.DEFAULT,
         SyscallCache.NO_CACHE,
         ThreadStateReceiver.NULL_INSTANCE);
@@ -194,19 +196,19 @@ public final class ActionsTestUtil {
       Executor executor, ExtendedEventHandler eventHandler) {
     return new ActionExecutionContext(
         executor,
-        /*actionInputFileCache=*/ null,
+        /* inputMetadataProvider= */ null,
         ActionInputPrefetcher.NONE,
         new ActionKeyContext(),
-        /*metadataHandler=*/ null,
-        /*rewindingEnabled=*/ false,
+        /* outputMetadataStore= */ null,
+        /* rewindingEnabled= */ false,
         LostInputsCheck.NONE,
-        /*fileOutErr=*/ null,
+        /* fileOutErr= */ null,
         eventHandler,
-        /*clientEnv=*/ ImmutableMap.of(),
-        /*topLevelFilesets=*/ ImmutableMap.of(),
+        /* clientEnv= */ ImmutableMap.of(),
+        /* topLevelFilesets= */ ImmutableMap.of(),
         (artifact, output) -> {},
-        /*actionFileSystem=*/ null,
-        /*skyframeDepsResult=*/ null,
+        /* actionFileSystem= */ null,
+        /* skyframeDepsResult= */ null,
         DiscoveredModulesPruner.DEFAULT,
         SyscallCache.NO_CACHE,
         ThreadStateReceiver.NULL_INSTANCE);
@@ -218,7 +220,7 @@ public final class ActionsTestUtil {
       ActionKeyContext actionKeyContext,
       FileOutErr fileOutErr,
       Path execRoot,
-      MetadataHandler metadataHandler,
+      OutputMetadataStore outputMetadataStore,
       MemoizingEvaluator evaluator,
       DiscoveredModulesPruner discoveredModulesPruner) {
     return createContextForInputDiscovery(
@@ -227,7 +229,7 @@ public final class ActionsTestUtil {
         actionKeyContext,
         fileOutErr,
         execRoot,
-        metadataHandler,
+        outputMetadataStore,
         new BlockingSkyFunctionEnvironment(evaluator, eventHandler),
         discoveredModulesPruner);
   }
@@ -238,7 +240,7 @@ public final class ActionsTestUtil {
       ActionKeyContext actionKeyContext,
       FileOutErr fileOutErr,
       Path execRoot,
-      MetadataHandler metadataHandler,
+      OutputMetadataStore outputMetadataStore,
       Environment environment,
       DiscoveredModulesPruner discoveredModulesPruner) {
     return ActionExecutionContext.forInputDiscovery(
@@ -247,17 +249,34 @@ public final class ActionsTestUtil {
             execRoot.getPathString(), execRoot.getFileSystem(), SyscallCache.NO_CACHE),
         ActionInputPrefetcher.NONE,
         actionKeyContext,
-        metadataHandler,
-        /*rewindingEnabled=*/ false,
+        outputMetadataStore,
+        /* rewindingEnabled= */ false,
         LostInputsCheck.NONE,
         fileOutErr,
         eventHandler,
         ImmutableMap.of(),
         environment,
-        /*actionFileSystem=*/ null,
+        /* actionFileSystem= */ null,
         discoveredModulesPruner,
         SyscallCache.NO_CACHE,
         ThreadStateReceiver.NULL_INSTANCE);
+  }
+
+  /** Creates an {@link ActionExecutionValue} with only file outputs. */
+  public static ActionExecutionValue createActionExecutionValue(
+      ImmutableMap<Artifact, FileArtifactValue> artifactData) {
+    return createActionExecutionValue(artifactData, /* treeArtifactData= */ ImmutableMap.of());
+  }
+
+  /** Creates an {@link ActionExecutionValue} with only file and tree artifact outputs. */
+  public static ActionExecutionValue createActionExecutionValue(
+      ImmutableMap<Artifact, FileArtifactValue> artifactData,
+      ImmutableMap<Artifact, TreeArtifactValue> treeArtifactData) {
+    return ActionExecutionValue.create(
+        artifactData,
+        treeArtifactData,
+        /* outputSymlinks= */ ImmutableList.of(),
+        /* discoveredModules= */ NestedSetBuilder.emptySet(Order.STABLE_ORDER));
   }
 
   public static Artifact createArtifact(ArtifactRoot root, Path path) {
@@ -347,16 +366,6 @@ public final class ActionsTestUtil {
       }
 
       @Override
-      public boolean isDirectory() {
-        return false;
-      }
-
-      @Override
-      public boolean isSymlink() {
-        return false;
-      }
-
-      @Override
       public void writeTo(OutputStream out) throws IOException {
         out.write(contents.getBytes(UTF_8));
       }
@@ -393,7 +402,7 @@ public final class ActionsTestUtil {
         EvaluationContext evaluationContext =
             EvaluationContext.newBuilder()
                 .setKeepGoing(false)
-                .setNumThreads(ResourceUsage.getAvailableProcessors())
+                .setParallelism(ResourceUsage.getAvailableProcessors())
                 .setEventHandler(new Reporter(new EventBus(), eventHandler))
                 .build();
         evaluationResult = evaluator.evaluate(depKeys, evaluationContext);
@@ -496,19 +505,19 @@ public final class ActionsTestUtil {
           NULL_ARTIFACT_OWNER);
 
   public static final ActionOwner NULL_ACTION_OWNER =
-      ActionOwner.create(
+      ActionOwner.createDummy(
           NULL_LABEL,
-          ImmutableList.of(),
           new Location("dummy-file", 0, 0),
-          "dummy-configuration-mnemonic",
-          "dummy-kind",
-          "dummy-configuration",
+          /* targetKind= */ "dummy-kind",
+          /* mnemonic= */ "dummy-configuration-mnemonic",
+          /* configurationChecksum= */ "dummy-configuration",
           new BuildConfigurationEvent(
               BuildEventStreamProtos.BuildEventId.getDefaultInstance(),
               BuildEventStreamProtos.BuildEvent.getDefaultInstance()),
-          null,
-          ImmutableMap.of(),
-          null);
+          /* isToolConfiguration= */ false,
+          /* executionPlatform= */ null,
+          /* aspectDescriptors= */ ImmutableList.of(),
+          /* execProperties= */ ImmutableMap.of());
 
   @SerializationConstant
   public static final ActionLookupData NULL_ACTION_LOOKUP_DATA =
@@ -912,6 +921,7 @@ public final class ActionsTestUtil {
         return artifact;
       }
     }
+
     throw new AssertionError("No input with basename '" + basename + "' in action " + action);
   }
 
@@ -1019,11 +1029,11 @@ public final class ActionsTestUtil {
   }
 
   /**
-   * A {@link MetadataHandler} for tests that throws {@link UnsupportedOperationException} for its
-   * operations.
+   * A {@link OutputMetadataStore} for tests that throws {@link UnsupportedOperationException} for
+   * its operations.
    */
-  public static final MetadataHandler THROWING_METADATA_HANDLER =
-      new FakeMetadataHandlerBase() {
+  public static final OutputMetadataStore THROWING_METADATA_HANDLER =
+      new FakeInputMetadataHandlerBase() {
         @Override
         public String toString() {
           return "THROWING_METADATA_HANDLER";
@@ -1031,15 +1041,22 @@ public final class ActionsTestUtil {
       };
 
   /**
-   * A {@link MetadataHandler} all of whose operations throw an exception.
+   * A {@link OutputMetadataStore} all of whose operations throw an exception.
    *
    * <p>This is to be used as a base class by other test programs that need to implement only a few
    * of the hooks required by the scenario under test. Tests that need an instance but do not need
    * any functionality can use {@link #THROWING_METADATA_HANDLER}.
    */
-  public static class FakeMetadataHandlerBase implements MetadataHandler {
+  public static class FakeInputMetadataHandlerBase
+      implements InputMetadataProvider, OutputMetadataStore {
     @Override
-    public FileArtifactValue getMetadata(ActionInput input) throws IOException {
+    public FileArtifactValue getInputMetadata(ActionInput input) throws IOException {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public FileArtifactValue getOutputMetadata(ActionInput input)
+        throws IOException, InterruptedException {
       throw new UnsupportedOperationException();
     }
 
@@ -1059,7 +1076,8 @@ public final class ActionsTestUtil {
     }
 
     @Override
-    public TreeArtifactValue getTreeArtifactValue(SpecialArtifact treeArtifact) throws IOException {
+    public TreeArtifactValue getTreeArtifactValue(SpecialArtifact treeArtifact)
+        throws IOException, InterruptedException {
       throw new UnsupportedOperationException();
     }
 

@@ -24,9 +24,9 @@ inputs to a rule, but also all of the tools and libraries required to execute
 the actions.
 
 Before creating or modifying any rule, ensure you are familiar with Bazel's
-[build phases](/rules/concepts). It is important to understand the three
+[build phases](/extending/concepts). It is important to understand the three
 phases of a build (loading, analysis, and execution). It is also useful to
-learn about [macros](/rules/macros) to understand the difference between rules and
+learn about [macros](/extending/macros) to understand the difference between rules and
 macros. To get started, first review the [Rules Tutorial](/rules/rules-tutorial).
 Then, use this page as a reference.
 
@@ -43,14 +43,14 @@ When defining your own rule, you get to decide what attributes it supports and
 how it generates its outputs.
 
 The rule's `implementation` function defines its exact behavior during the
-[analysis phase](/rules/concepts#evaluation-model). This function does not run any
+[analysis phase](/extending/concepts#evaluation-model). This function does not run any
 external commands. Rather, it registers [actions](#actions) that will be used
 later during the execution phase to build the rule's outputs, if they are
 needed.
 
 ## Rule creation
 
-In a `.bzl` file, use the [rule](/rules/lib/globals#rule) function to define a new
+In a `.bzl` file, use the [rule](/rules/lib/globals/bzl#rule) function to define a new
 rule, and store the result in a global variable. The call to `rule` specifies
 [attributes](#attributes) and an
 [implementation function](#implementation_function):
@@ -65,7 +65,7 @@ example_library = rule(
 )
 ```
 
-This defines a [kind of rule](/reference/query#kind) named `example_library`.
+This defines a [kind of rule](/query/language#kind) named `example_library`.
 
 The call to `rule` also must specify if the rule creates an
 [executable](#executable-rules) output (with `executable=True`), or specifically
@@ -91,9 +91,9 @@ a target. This is called *instantiating* the rule. This specifies a name for the
 new target and values for the target's [attributes](#attributes).
 
 Rules can also be called from Starlark functions and loaded in `.bzl` files.
-Starlark functions that call rules are called [Starlark macros](/rules/macros).
+Starlark functions that call rules are called [Starlark macros](/extending/macros).
 Starlark macros must ultimately be called from `BUILD` files, and can only be
-called during the [loading phase](/rules/concepts#evaluation-model), when `BUILD`
+called during the [loading phase](/extending/concepts#evaluation-model), when `BUILD`
 files are evaluated to instantiate targets.
 
 ## Attributes
@@ -103,7 +103,7 @@ target's [implementation](#implementation_function), or they can refer to other
 targets, creating a graph of dependencies.
 
 Rule-specific attributes, such as `srcs` or `deps`, are defined by passing a map
-from attribute names to schemas (created using the [`attr`](/rules/lib/attr)
+from attribute names to schemas (created using the [`attr`](/rules/lib/toplevel/attr)
 module) to the `attrs` parameter of `rule`.
 [Common attributes](/reference/be/common-definitions#common-attributes), such as
 `name` and `visibility`, are implicitly added to all rules. Additional
@@ -144,12 +144,12 @@ example_library = rule(
 
 These are examples of *dependency attributes*. Any attribute that specifies
 an input label (those defined with
-[`attr.label_list`](/rules/lib/attr#label_list),
-[`attr.label`](/rules/lib/attr#label), or
-[`attr.label_keyed_string_dict`](/rules/lib/attr#label_keyed_string_dict))
+[`attr.label_list`](/rules/lib/toplevel/attr#label_list),
+[`attr.label`](/rules/lib/toplevel/attr#label), or
+[`attr.label_keyed_string_dict`](/rules/lib/toplevel/attr#label_keyed_string_dict))
 specifies dependencies of a certain type
 between a target and the targets whose labels (or the corresponding
-[`Label`](/rules/lib/Label) objects) are listed in that attribute when the target
+[`Label`](/rules/lib/builtins/Label) objects) are listed in that attribute when the target
 is defined. The repository, and possibly the path, for these labels is resolved
 relative to the defined target.
 
@@ -215,13 +215,13 @@ label.
 
 Implicit dependencies are generally used for tools that reside in the same
 repository as the rule implementation. If the tool comes from the
-[execution platform](/docs/platforms) or a different repository instead, the
-rule should obtain that tool from a [toolchain](/docs/toolchains).
+[execution platform](/extending/platforms) or a different repository instead, the
+rule should obtain that tool from a [toolchain](/extending/toolchains).
 
 ### Output attributes
 
-*Output attributes*, such as [`attr.output`](/rules/lib/attr#output) and
-[`attr.output_list`](/rules/lib/attr#output_list), declare an output file that the
+*Output attributes*, such as [`attr.output`](/rules/lib/toplevel/attr#output) and
+[`attr.output_list`](/rules/lib/toplevel/attr#output_list), declare an output file that the
 target generates. These differ from dependency attributes in two ways:
 
 *   They define output file targets instead of referring to targets defined
@@ -240,7 +240,7 @@ can be specifically depended upon or
 ## Implementation function
 
 Every rule requires an `implementation` function. These functions are executed
-strictly in the [analysis phase](/rules/concepts#evaluation-model) and transform the
+strictly in the [analysis phase](/extending/concepts#evaluation-model) and transform the
 graph of targets generated in the loading phase into a graph of
 [actions](#actions) to be performed during the execution phase. As such,
 implementation functions can not actually read or write files.
@@ -250,16 +250,16 @@ underscore). Conventionally, they are named the same as their rule, but suffixed
 with `_impl`.
 
 Implementation functions take exactly one parameter: a
-[rule context](/rules/lib/ctx), conventionally named `ctx`. They return a list of
+[rule context](/rules/lib/builtins/ctx), conventionally named `ctx`. They return a list of
 [providers](#providers).
 
 ### Targets
 
-Dependencies are represented at analysis time as [`Target`](/rules/lib/Target)
+Dependencies are represented at analysis time as [`Target`](/rules/lib/builtins/Target)
 objects. These objects contain the [providers](#providers) generated when the
 target's implementation function was executed.
 
-[`ctx.attr`](/rules/lib/ctx#attr) has fields corresponding to the names of each
+[`ctx.attr`](/rules/lib/builtins/ctx#attr) has fields corresponding to the names of each
 dependency attribute, containing `Target` objects representing each direct
 dependency via that attribute. For `label_list` attributes, this is a list of
 `Targets`. For `label` attributes, this is a single `Target` or `None`.
@@ -272,7 +272,7 @@ return [ExampleInfo(headers = depset(...))]
 
 Those can be accessed using index notation (`[]`), with the type of provider as
 a key. These can be [custom providers](#custom_providers) defined in Starlark or
-[providers for native rules](/rules/lib/starlark-provider) available as Starlark
+[providers for native rules](/rules/lib/providers) available as Starlark
 global variables.
 
 For example, if a rule takes header files via a `hdrs` attribute and provides
@@ -285,7 +285,7 @@ def _example_library_impl(ctx):
     transitive_headers = [hdr[ExampleInfo].headers for hdr in ctx.attr.hdrs]
 ```
 
-For the legacy style in which a [`struct`](/rules/lib/struct) is returned from a
+For the legacy style in which a [`struct`](/rules/lib/builtins/struct) is returned from a
 target's implementation function instead of a list of provider objects:
 
 ```python
@@ -303,10 +303,10 @@ This style is strongly discouraged and rules should be
 
 ### Files
 
-Files are represented by [`File`](/rules/lib/File) objects. Since Bazel does not
+Files are represented by [`File`](/rules/lib/builtins/File) objects. Since Bazel does not
 perform file I/O during the analysis phase, these objects cannot be used to
 directly read or write file content. Rather, they are passed to action-emitting
-functions (see [`ctx.actions`](/rules/lib/actions)) to construct pieces of the
+functions (see [`ctx.actions`](/rules/lib/builtins/actions)) to construct pieces of the
 action graph.
 
 A `File` can either be a source file or a generated file. Each generated file
@@ -314,7 +314,7 @@ must be an output of exactly one action. Source files cannot be the output of
 any action.
 
 For each dependency attribute, the corresponding field of
-[`ctx.files`](/rules/lib/ctx#files) contains a list of the default outputs of all
+[`ctx.files`](/rules/lib/builtins/ctx#files) contains a list of the default outputs of all
 dependencies via that attribute:
 
 ```python
@@ -325,20 +325,20 @@ def _example_library_impl(ctx):
     ...
 ```
 
-[`ctx.file`](/rules/lib/ctx#file) contains a single `File` or `None` for
+[`ctx.file`](/rules/lib/builtins/ctx#file) contains a single `File` or `None` for
 dependency attributes whose specs set `allow_single_file=True`.
-[`ctx.executable`](/rules/lib/ctx#executable) behaves the same as `ctx.file`, but only
+[`ctx.executable`](/rules/lib/builtins/ctx#executable) behaves the same as `ctx.file`, but only
 contains fields for dependency attributes whose specs set `executable=True`.
 
 ### Declaring outputs
 
 During the analysis phase, a rule's implementation function can create outputs.
 Since all labels have to be known during the loading phase, these additional
-outputs have no labels. `File` objects for outputs can be created using using
-[`ctx.actions.declare_file`](/rules/lib/actions#declare_file) and
-[`ctx.actions.declare_directory`](/rules/lib/actions#declare_directory). Often,
+outputs have no labels. `File` objects for outputs can be created using
+[`ctx.actions.declare_file`](/rules/lib/builtins/actions#declare_file) and
+[`ctx.actions.declare_directory`](/rules/lib/builtins/actions#declare_directory). Often,
 the names of outputs are based on the target's name,
-[`ctx.label.name`](/rules/lib/ctx#label):
+[`ctx.label.name`](/rules/lib/builtins/ctx#label):
 
 ```python
 def _example_library_impl(ctx):
@@ -349,7 +349,7 @@ def _example_library_impl(ctx):
 
 For *predeclared outputs*, like those created for
 [output attributes](#output_attributes), `File` objects instead can be retrieved
-from the corresponding fields of [`ctx.outputs`](/rules/lib/ctx#outputs).
+from the corresponding fields of [`ctx.outputs`](/rules/lib/builtins/ctx#outputs).
 
 ### Actions
 
@@ -360,16 +360,16 @@ because an action can depend on the output of another action. For example, in C,
 the linker must be called after the compiler.
 
 General-purpose functions that create actions are defined in
-[`ctx.actions`](/rules/lib/actions):
+[`ctx.actions`](/rules/lib/builtins/actions):
 
-*   [`ctx.actions.run`](/rules/lib/actions#run), to run an executable.
-*   [`ctx.actions.run_shell`](/rules/lib/actions#run_shell), to run a shell
+*   [`ctx.actions.run`](/rules/lib/builtins/actions#run), to run an executable.
+*   [`ctx.actions.run_shell`](/rules/lib/builtins/actions#run_shell), to run a shell
     command.
-*   [`ctx.actions.write`](/rules/lib/actions#write), to write a string to a file.
-*   [`ctx.actions.expand_template`](/rules/lib/actions#expand_template), to
+*   [`ctx.actions.write`](/rules/lib/builtins/actions#write), to write a string to a file.
+*   [`ctx.actions.expand_template`](/rules/lib/builtins/actions#expand_template), to
     generate a file from a template.
 
-[`ctx.actions.args`](/rules/lib/actions#args) can be used to efficiently
+[`ctx.actions.args`](/rules/lib/builtins/actions#args) can be used to efficiently
 accumulate the arguments for actions. It avoids flattening depsets until
 execution time:
 
@@ -400,7 +400,7 @@ def _example_library_impl(ctx):
 
 Actions take a list or depset of input files and generate a (non-empty) list of
 output files. The set of input and output files must be known during the
-[analysis phase](/rules/concepts#evaluation-model). It might depend on the value of
+[analysis phase](/extending/concepts#evaluation-model). It might depend on the value of
 attributes, including providers from dependencies, but it cannot depend on the
 result of the execution. For example, if your action runs the unzip command, you
 must specify which files you expect to be inflated (before running unzip).
@@ -434,13 +434,13 @@ about.
 Since a rule's implementation function can only read providers from the
 instantiated target's immediate dependencies, rules need to forward any
 information from a target's dependencies that needs to be known by a target's
-consumers, generally by accumulating that into a [`depset`](/rules/lib/depset).
+consumers, generally by accumulating that into a [`depset`](/rules/lib/builtins/depset).
 
 A target's providers are specified by a list of `Provider` objects returned by
 the implementation function.
 
 Old implementation functions can also be written in a legacy style where the
-implementation function returns a [`struct`](/rules/lib/struct) instead of list of
+implementation function returns a [`struct`](/rules/lib/builtins/struct) instead of list of
 provider objects. This style is strongly discouraged and rules should be
 [migrated away from it](#migrating_from_legacy_providers).
 
@@ -452,7 +452,7 @@ the target is requested for build at the command line. For example, a
 will be built by the command `bazel build //pkg:foo`.
 
 Default outputs are specified by the `files` parameter of
-[`DefaultInfo`](/rules/lib/DefaultInfo):
+[`DefaultInfo`](/rules/lib/providers/DefaultInfo):
 
 ```python
 def _example_library_impl(ctx):
@@ -478,13 +478,13 @@ reproduce the failure.
 #### Runfiles
 
 Runfiles are a set of files used by a target at runtime (as opposed to build
-time). During the [execution phase](/rules/concepts#evaluation-model), Bazel creates
+time). During the [execution phase](/extending/concepts#evaluation-model), Bazel creates
 a directory tree containing symlinks pointing to the runfiles. This stages the
 environment for the binary so it can access the runfiles during runtime.
 
 Runfiles can be added manually during rule creation.
-[`runfiles`](/rules/lib/runfiles) objects can be created by the `runfiles` method
-on the rule context, [`ctx.runfiles`](/rules/lib/ctx#runfiles) and passed to the
+[`runfiles`](/rules/lib/builtins/runfiles) objects can be created by the `runfiles` method
+on the rule context, [`ctx.runfiles`](/rules/lib/builtins/ctx#runfiles) and passed to the
 `runfiles` parameter on `DefaultInfo`. The executable output of
 [executable rules](#executable-rules) is implicitly added to the runfiles.
 
@@ -517,7 +517,7 @@ def _example_library_impl(ctx):
 
 #### Custom providers
 
-Providers can be defined using the [`provider`](/rules/lib/globals#provider)
+Providers can be defined using the [`provider`](/rules/lib/globals/bzl#provider)
 function to convey rule-specific information:
 
 ```python
@@ -556,7 +556,7 @@ provider instances obey certain invariants, or to give users a cleaner API for
 obtaining an instance.
 
 This is done by passing an `init` callback to the
-[`provider`](/rules/lib/globals.html#provider) function. If this callback is given, the
+[`provider`](/rules/lib/globals/bzl.html#provider) function. If this callback is given, the
 return type of `provider()` changes to be a tuple of two values: the provider
 symbol that is the ordinary return value when `init` is not used, and a "raw
 constructor".
@@ -638,8 +638,8 @@ def make_exampleinfo(...):
 Executable rules define targets that can be invoked by a `bazel run` command.
 Test rules are a special kind of executable rule whose targets can also be
 invoked by a `bazel test` command. Executable and test rules are created by
-setting the respective [`executable`](/rules/lib/globals#rule.executable) or
-[`test`](/rules/lib/globals#rule.test) argument to `True` in the call to `rule`:
+setting the respective [`executable`](/rules/lib/globals/bzl#rule.executable) or
+[`test`](/rules/lib/globals/bzl#rule.test) argument to `True` in the call to `rule`:
 
 ```python
 example_binary = rule(
@@ -662,7 +662,7 @@ have this suffix.
 Both kinds of rules must produce an executable output file (which may or may not
 be predeclared) that will be invoked by the `run` or `test` commands. To tell
 Bazel which of a rule's outputs to use as this executable, pass it as the
-`executable` argument of a returned [`DefaultInfo`](/rules/lib/DefaultInfo)
+`executable` argument of a returned [`DefaultInfo`](/rules/lib/providers/DefaultInfo)
 provider. That `executable` is added to the default outputs of the rule (so you
 don't need to pass that to both `executable` and `files`). It's also implicitly
 added to the [runfiles](#runfiles):
@@ -678,10 +678,10 @@ def _example_binary_impl(ctx):
 ```
 
 The action that generates this file must set the executable bit on the file. For
-a [`ctx.actions.run`](/rules/lib/actions#run) or
-[`ctx.actions.run_shell`](/rules/lib/actions#run_shell) action this should be done
+a [`ctx.actions.run`](/rules/lib/builtins/actions#run) or
+[`ctx.actions.run_shell`](/rules/lib/builtins/actions#run_shell) action this should be done
 by the underlying tool that is invoked by the action. For a
-[`ctx.actions.write`](/rules/lib/actions#write) action, pass `is_executable=True`.
+[`ctx.actions.write`](/rules/lib/builtins/actions#write) action, pass `is_executable=True`.
 
 As [legacy behavior](#deprecated_predeclared_outputs), executable rules have a
 special `ctx.outputs.executable` predeclared output. This file serves as the
@@ -699,7 +699,7 @@ and a
 attributes implicitly defined, in addition to those added for
 [all rules](/reference/be/common-definitions#common-attributes). The defaults of
 implicitly-added attributes cannot be changed, though this can be worked around
-by wrapping a private rule in a [Starlark macro](/rules/macros) which alters the
+by wrapping a private rule in a [Starlark macro](/extending/macros) which alters the
 default:
 
 ```python
@@ -717,8 +717,8 @@ When an executable target is run with `bazel run` (or `test`), the root of the
 runfiles directory is adjacent to the executable. The paths relate as follows:
 
 ```python
-# Given executable_file and runfile_file:
-runfiles_root = executable_file.path + ".runfiles"
+# Given launcher_path and runfile_file:
+runfiles_root = launcher_path.path + ".runfiles"
 workspace_name = ctx.workspace_name
 runfile_path = runfile_file.short_path
 execution_root_relative_path = "%s/%s/%s" % (
@@ -726,7 +726,7 @@ execution_root_relative_path = "%s/%s/%s" % (
 ```
 
 The path to a `File` under the runfiles directory corresponds to
-[`File.short_path`](/rules/lib/File#short_path).
+[`File.short_path`](/rules/lib/builtins/File#short_path).
 
 The binary executed directly by `bazel` is adjacent to the root of the
 `runfiles` directory. However, binaries called *from* the runfiles can't make
@@ -751,8 +751,8 @@ In addition to [default outputs](#default_outputs), any *predeclared output* can
 be explicitly requested on the command line. Rules can specify predeclared
 outputs via [output attributes](#output_attributes). In that case, the user
 explicitly chooses labels for outputs when they instantiate the rule. To obtain
-[`File`](/rules/lib/File) objects for output attributes, use the corresponding
-attribute of [`ctx.outputs`](/rules/lib/ctx#outputs). Rules can
+[`File`](/rules/lib/builtins/File) objects for output attributes, use the corresponding
+attribute of [`ctx.outputs`](/rules/lib/builtins/ctx#outputs). Rules can
 [implicitly define predeclared outputs](#deprecated_predeclared_outputs) based
 on the target name as well, but this feature is deprecated.
 
@@ -766,7 +766,7 @@ they can only be requested by appearing in the default outputs or an output
 group.
 
 Output groups can be specified with the
-[`OutputGroupInfo`](/rules/lib/OutputGroupInfo) provider. Note that unlike many
+[`OutputGroupInfo`](/rules/lib/providers/OutputGroupInfo) provider. Note that unlike many
 built-in providers, `OutputGroupInfo` can take parameters with arbitrary names
 to define output groups with that name:
 
@@ -786,7 +786,7 @@ def _example_library_impl(ctx):
 ```
 
 Also unlike most providers, `OutputGroupInfo` can be returned by both an
-[aspect](/rules/aspects) and the rule target to which that aspect is applied, as
+[aspect](/extending/aspects) and the rule target to which that aspect is applied, as
 long as they do not define the same output groups. In that case, the resulting
 providers are merged.
 
@@ -799,7 +799,7 @@ of files from a target to the actions of its consumers. Define
 Imagine that you want to build a C++ binary for a different architecture. The
 build can be complex and involve multiple steps. Some of the intermediate
 binaries, like compilers and code generators, have to run on
-[the execution platform](/docs/platforms#overview) (which could be your host,
+[the execution platform](/extending/platforms#overview) (which could be your host,
 or a remote executor). Some binaries like the final output must be built for the
 target architecture.
 
@@ -841,44 +841,24 @@ help rule designers be explicit about their intentions. When `executable=False`,
 which means `cfg` is optional, only set this when it truly helps readability.
 
 You can also use `cfg=my_transition` to use
-[user-defined transitions](/rules/config#user-defined-transitions), which allow
+[user-defined transitions](/extending/config#user-defined-transitions), which allow
 rule authors a great deal of flexibility in changing configurations, with the
 drawback of
-[making the build graph larger and less comprehensible](/rules/config#memory-and-performance-considerations).
+[making the build graph larger and less comprehensible](/extending/config#memory-and-performance-considerations).
 
 **Note**: Historically, Bazel didn't have the concept of execution platforms,
-and instead all build actions were considered to run on the host machine.
-Because of this, there is a single "host" configuration, and a "host" transition
-that can be used to build a dependency in the host configuration. Many rules
-still use the "host" transition for their tools, but this is currently
-deprecated and being migrated to use "exec" transitions where possible.
-
-There are numerous differences between the "host" and "exec" configurations:
-
-*   "host" is terminal, "exec" isn't: Once a dependency is in the "host"
-    configuration, no more transitions are allowed. You can keep making further
-    configuration transitions once you're in an "exec" configuration.
-*   "host" is monolithic, "exec" isn't: There is only one "host" configuration,
-    but there can be a different "exec" configuration for each execution
-    platform.
-*   "host" assumes you run tools on the same machine as Bazel, or on a
-    significantly similar machine. This is no longer true: you can run build
-    actions on your local machine, or on a remote executor, and there's no
-    guarantee that the remote executor is the same CPU and OS as your local
-    machine.
-
-Both the "exec" and "host" configurations apply the same option changes, (for example,
-set `--compilation_mode` from `--host_compilation_mode`, set `--cpu` from
-`--host_cpu`, etc). The difference is that the "host" configuration starts with
-the **default** values of all other flags, whereas the "exec" configuration
-starts with the **current** values of flags, based on the target configuration.
+and instead all build actions were considered to run on the host machine. Bazel
+versions before 6.0 created a distinct "host" configuration to represent this.
+If you see references to "host" in code or old documentation, that's what this
+refers to. We recommend using Bazel 6.0 or newer to avoid this extra conceptual
+overhead.
 
 <a name="fragments"></a>
 
 ### Configuration fragments
 
 Rules may access
-[configuration fragments](/rules/lib/starlark-configuration-fragment) such as
+[configuration fragments](/rules/lib/fragments) such as
 `cpp`, `java` and `jvm`. However, all required fragments must be declared in
 order to avoid access errors:
 
@@ -895,10 +875,6 @@ my_rule = rule(
     ...
 )
 ```
-
-`ctx.fragments` only provides configuration fragments for the target
-configuration. If you want to access fragments for the host configuration, use
-`ctx.host_fragments` instead.
 
 ### Runfiles symlinks
 
@@ -949,7 +925,7 @@ is specified.
 
 If a rule implementation adds coverage instrumentation at build time, it needs
 to account for that in its implementation function.
-[ctx.coverage_instrumented](/rules/lib/ctx#coverage_instrumented) returns true in
+[ctx.coverage_instrumented](/rules/lib/builtins/ctx#coverage_instrumented) returns true in
 coverage mode if a target's sources should be instrumented:
 
 ```python
@@ -960,7 +936,7 @@ if ctx.coverage_instrumented():
 
 Logic that always needs to be on in coverage mode (whether a target's sources
 specifically are instrumented or not) can be conditioned on
-[ctx.configuration.coverage_enabled](/rules/lib/configuration#coverage_enabled).
+[ctx.configuration.coverage_enabled](/rules/lib/builtins/configuration#coverage_enabled).
 
 If the rule directly includes sources from its dependencies before compilation
 (such as header files), it may also need to turn on compile-time instrumentation if
@@ -977,7 +953,7 @@ if (ctx.configuration.coverage_enabled and
 
 Rules also should provide information about which attributes are relevant for
 coverage with the `InstrumentedFilesInfo` provider, constructed using
-[`coverage_common.instrumented_files_info`](/rules/lib/coverage_common#instrumented_files_info).
+[`coverage_common.instrumented_files_info`](/rules/lib/toplevel/coverage_common#instrumented_files_info).
 The `dependency_attributes` parameter of `instrumented_files_info` should list
 all runtime dependency attributes, including code dependencies like `deps` and
 data dependencies like `data`. The `source_attributes` parameter should list the
@@ -1003,7 +979,7 @@ non-tool [dependency attribute](#dependency_attributes) that doesn't set
 [`cfg`](#configuration) to `"host"` or `"exec"` in the attribute schema) in
 `dependency_attributes`. (This isn't ideal behavior, since it puts attributes
 like `srcs` in `dependency_attributes` instead of `source_attributes`, but it
-avoids the need for explcit coverage configuration for all rules in the
+avoids the need for explicit coverage configuration for all rules in the
 dependency chain.)
 
 ### Validation Actions
@@ -1163,7 +1139,7 @@ flag, which defaults to true.
 
 There are two **deprecated** ways of using predeclared outputs:
 
-*   The [`outputs`](/rules/lib/globals#rule.outputs) parameter of `rule` specifies
+*   The [`outputs`](/rules/lib/globals/bzl#rule.outputs) parameter of `rule` specifies
     a mapping between output attribute names and string templates for generating
     predeclared output labels. Prefer using non-predeclared outputs and
     explicitly adding outputs to `DefaultInfo.files`. Use the rule target's
@@ -1179,12 +1155,12 @@ There are two **deprecated** ways of using predeclared outputs:
 
 ### Runfiles features to avoid
 
-[`ctx.runfiles`](/rules/lib/ctx#runfiles) and the [`runfiles`](/rules/lib/runfiles)
+[`ctx.runfiles`](/rules/lib/builtins/ctx#runfiles) and the [`runfiles`](/rules/lib/builtins/runfiles)
 type have a complex set of features, many of which are kept for legacy reasons.
 The following recommendations help reduce complexity:
 
 *   **Avoid** use of the `collect_data` and `collect_default` modes of
-    [`ctx.runfiles`](/rules/lib/ctx#runfiles). These modes implicitly collect
+    [`ctx.runfiles`](/rules/lib/builtins/ctx#runfiles). These modes implicitly collect
     runfiles across certain hardcoded dependency edges in confusing ways.
     Instead, add files using the `files` or `transitive_files` parameters of
     `ctx.runfiles`, or by merging in runfiles from dependencies with
@@ -1242,14 +1218,14 @@ provider):
 
 *   The fields `files`, `runfiles`, `data_runfiles`, `default_runfiles`, and
     `executable` correspond to the same-named fields of
-    [`DefaultInfo`](/rules/lib/DefaultInfo). It is not allowed to specify any of
+    [`DefaultInfo`](/rules/lib/providers/DefaultInfo). It is not allowed to specify any of
     these fields while also returning a `DefaultInfo` provider.
 
 *   The field `output_groups` takes a struct value and corresponds to an
-    [`OutputGroupInfo`](/rules/lib/OutputGroupInfo).
+    [`OutputGroupInfo`](/rules/lib/providers/OutputGroupInfo).
 
-In [`provides`](/rules/lib/globals#rule.provides) declarations of rules, and in
-[`providers`](/rules/lib/attr#label_list.providers) declarations of dependency
+In [`provides`](/rules/lib/globals/bzl#rule.provides) declarations of rules, and in
+[`providers`](/rules/lib/toplevel/attr#label_list.providers) declarations of dependency
 attributes, legacy providers are passed in as strings and modern providers are
 passed in by their `*Info` symbol. Be sure to change from strings to symbols
 when migrating. For complex or large rule sets where it is difficult to update

@@ -58,6 +58,7 @@ class TestBase(unittest.TestCase):
       'rules_cc',
       'rules_java',
       'rules_proto',
+      'rules_python',
       'remotejdk11_linux_for_testing',
       'remotejdk11_linux_aarch64_for_testing',
       'remotejdk11_linux_ppc64le_for_testing',
@@ -67,17 +68,18 @@ class TestBase(unittest.TestCase):
       'remotejdk11_win_for_testing',
       'remotejdk11_win_arm64_for_testing',
       'remotejdk17_linux_for_testing',
+      'remotejdk17_linux_s390x_for_testing',
       'remotejdk17_macos_for_testing',
       'remotejdk17_macos_aarch64_for_testing',
       'remotejdk17_win_for_testing',
       'remotejdk17_win_arm64_for_testing',
-      'remotejdk18_linux_for_testing',
-      'remotejdk18_macos_for_testing',
-      'remotejdk18_macos_aarch64_for_testing',
-      'remotejdk18_win_for_testing',
-      'remotejdk18_win_arm64_for_testing',
+      'remotejdk20_linux_for_testing',
+      'remotejdk20_macos_for_testing',
+      'remotejdk20_macos_aarch64_for_testing',
+      'remotejdk20_win_for_testing',
       'remote_java_tools_for_testing',
-      'remote_java_tools_darwin_for_testing',
+      'remote_java_tools_darwin_x86_64_for_testing',
+      'remote_java_tools_darwin_arm64_for_testing',
       'remote_java_tools_linux_for_testing',
       'remote_java_tools_windows_for_testing',
       'remote_coverage_tools',
@@ -327,12 +329,9 @@ class TestBase(unittest.TestCase):
       os.chmod(abspath, stat.S_IRWXU)
     return abspath
 
-  def RunBazel(self,
-               args,
-               env_remove=None,
-               env_add=None,
-               cwd=None,
-               allow_failure=True):
+  def RunBazel(
+      self, args, env_remove=None, env_add=None, cwd=None, allow_failure=False
+  ):
     """Runs "bazel <args>", waits for it to exit.
 
     Args:
@@ -435,14 +434,16 @@ class TestBase(unittest.TestCase):
 
     shutil.rmtree(self._cas_path)
 
-  def RunProgram(self,
-                 args,
-                 env_remove=None,
-                 env_add=None,
-                 shell=False,
-                 cwd=None,
-                 allow_failure=True,
-                 executable=None):
+  def RunProgram(
+      self,
+      args,
+      env_remove=None,
+      env_add=None,
+      shell=False,
+      cwd=None,
+      allow_failure=False,
+      executable=None,
+  ):
     """Runs a program (args[0]), waits for it to exit.
 
     Args:

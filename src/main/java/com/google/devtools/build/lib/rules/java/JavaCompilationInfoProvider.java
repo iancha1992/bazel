@@ -17,10 +17,10 @@ package com.google.devtools.build.lib.rules.java;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.collect.nestedset.Depset;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.rules.java.JavaInfo.JavaInfoInternalProvider;
 import com.google.devtools.build.lib.starlarkbuildapi.java.JavaCompilationInfoProviderApi;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import javax.annotation.Nullable;
@@ -30,7 +30,7 @@ import javax.annotation.Nullable;
  */
 @Immutable
 public final class JavaCompilationInfoProvider
-    implements TransitiveInfoProvider, JavaCompilationInfoProviderApi<Artifact> {
+    implements JavaInfoInternalProvider, JavaCompilationInfoProviderApi<Artifact> {
   private final ImmutableList<String> javacOpts;
   @Nullable private final NestedSet<Artifact> runtimeClasspath;
   @Nullable private final NestedSet<Artifact> compilationClasspath;
@@ -86,13 +86,13 @@ public final class JavaCompilationInfoProvider
   @Override
   @Nullable
   public Depset /*<Artifact>*/ getRuntimeClasspath() {
-    return runtimeClasspath == null ? null : Depset.of(Artifact.TYPE, runtimeClasspath);
+    return runtimeClasspath == null ? null : Depset.of(Artifact.class, runtimeClasspath);
   }
 
   @Override
   @Nullable
   public Depset /*<Artifact>*/ getCompilationClasspath() {
-    return compilationClasspath == null ? null : Depset.of(Artifact.TYPE, compilationClasspath);
+    return compilationClasspath == null ? null : Depset.of(Artifact.class, compilationClasspath);
   }
 
   @Override

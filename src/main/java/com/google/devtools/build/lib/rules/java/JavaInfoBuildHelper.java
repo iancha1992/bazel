@@ -110,7 +110,7 @@ final class JavaInfoBuildHelper {
 
     JavaRuleOutputJarsProvider javaRuleOutputJarsProvider =
         JavaRuleOutputJarsProvider.builder().addJavaOutput(javaOutput).build();
-    javaInfoBuilder.addProvider(JavaRuleOutputJarsProvider.class, javaRuleOutputJarsProvider);
+    javaInfoBuilder.javaRuleOutputs(javaRuleOutputJarsProvider);
 
     ClasspathType type = neverlink ? COMPILE_ONLY : BOTH;
 
@@ -122,18 +122,15 @@ final class JavaInfoBuildHelper {
     streamProviders(runtimeDeps, JavaCompilationArgsProvider.class)
         .forEach(args -> javaCompilationArgsBuilder.addDeps(args, RUNTIME_ONLY));
 
-    javaInfoBuilder.addProvider(
-        JavaCompilationArgsProvider.class, javaCompilationArgsBuilder.build());
+    javaInfoBuilder.javaCompilationArgs(javaCompilationArgsBuilder.build());
 
     javaInfoBuilder.javaPluginInfo(mergeExportedJavaPluginInfo(exportedPlugins, exports));
 
-    javaInfoBuilder.addProvider(
-        JavaSourceJarsProvider.class,
+    javaInfoBuilder.javaSourceJars(
         createJavaSourceJarsProvider(
             javaOutput.getSourceJars(), concat(compileTimeDeps, runtimeDeps, exports)));
 
-    javaInfoBuilder.addProvider(
-        JavaGenJarsProvider.class,
+    javaInfoBuilder.javaGenJars(
         JavaGenJarsProvider.create(
             false,
             javaOutput.getGeneratedClassJar(),
@@ -152,11 +149,9 @@ final class JavaInfoBuildHelper {
                 streamProviders(compileTimeDeps, JavaCcInfoProvider.class),
                 Stream.of(new JavaCcInfoProvider(CcInfo.merge(nativeLibraries))))
             .collect(toImmutableList());
-    javaInfoBuilder.addProvider(
-        JavaCcInfoProvider.class, JavaCcInfoProvider.merge(transitiveNativeLibraries));
+    javaInfoBuilder.javaCcInfo(JavaCcInfoProvider.merge(transitiveNativeLibraries));
 
-    javaInfoBuilder.addProvider(
-        JavaModuleFlagsProvider.class,
+    javaInfoBuilder.javaModuleFlags(
         JavaModuleFlagsProvider.merge(
             JavaInfo.streamProviders(
                     concat(compileTimeDeps, exports), JavaModuleFlagsProvider.class)
@@ -181,7 +176,8 @@ final class JavaInfoBuildHelper {
       Artifact outputSourceJar,
       List<Artifact> sourceFiles,
       List<Artifact> sourceJars,
-      JavaToolchainProvider javaToolchain)
+      JavaToolchainProvider javaToolchain,
+      String execGroup)
       throws EvalException {
     if (outputJar == null && outputSourceJar == null) {
       throw Starlark.errorf(
@@ -202,7 +198,8 @@ final class JavaInfoBuildHelper {
         NestedSetBuilder.<Artifact>wrap(Order.STABLE_ORDER, sourceFiles),
         NestedSetBuilder.<Artifact>wrap(Order.STABLE_ORDER, sourceJars),
         outputSourceJar,
-        javaToolchain);
+        javaToolchain,
+        execGroup);
     return outputSourceJar;
   }
 
@@ -385,15 +382,13 @@ final class JavaInfoBuildHelper {
             .collect(toImmutableList());
 
     return javaInfoBuilder
-        .addProvider(JavaCompilationArgsProvider.class, javaCompilationArgsProvider)
-        .addProvider(
-            JavaSourceJarsProvider.class,
+        .javaCompilationArgs(javaCompilationArgsProvider)
+        .javaSourceJars(
             createJavaSourceJarsProvider(outputSourceJars, concat(runtimeDeps, exports, deps)))
-        .addProvider(JavaRuleOutputJarsProvider.class, outputJarsBuilder.build())
+        .javaRuleOutputs(outputJarsBuilder.build())
         .javaPluginInfo(mergeExportedJavaPluginInfo(exportedPlugins, exports))
-        .addProvider(JavaCcInfoProvider.class, JavaCcInfoProvider.merge(transitiveNativeLibraries))
-        .addProvider(
-            JavaModuleFlagsProvider.class,
+        .javaCcInfo(JavaCcInfoProvider.merge(transitiveNativeLibraries))
+        .javaModuleFlags(
             createJavaModuleFlagsProvider(addExports, addOpens, concat(runtimeDeps, exports, deps)))
         .setNeverlink(neverlink)
         .build();
@@ -416,7 +411,8 @@ final class JavaInfoBuildHelper {
       Artifact inputJar,
       @Nullable Artifact outputJar,
       @Nullable Label targetLabel,
-      JavaToolchainProvider javaToolchain)
+      JavaToolchainProvider javaToolchain,
+      String execGroup)
       throws EvalException {
     Artifact interfaceJar;
     if (outputJar != null) {
@@ -439,7 +435,8 @@ final class JavaInfoBuildHelper {
             .setProgressMessage("Extracting interface for jar %s", inputJar.getFilename())
             .addCommandLine(commandLine.build())
             .useDefaultShellEnvironment()
-            .setMnemonic("JavaIjar");
+            .setMnemonic("JavaIjar")
+            .setExecGroup(execGroup);
     actions.registerAction(actionBuilder.build(actions.getActionConstructionContext()));
     return interfaceJar;
   }
@@ -448,7 +445,8 @@ final class JavaInfoBuildHelper {
       StarlarkActionFactory actions,
       Artifact inputJar,
       Label targetLabel,
-      JavaToolchainProvider javaToolchain)
+      JavaToolchainProvider javaToolchain,
+      String execGroup)
       throws EvalException {
     String basename = FileSystemUtils.removeExtension(inputJar.getFilename()) + "-stamped.jar";
     Artifact outputJar = actions.declareFile(basename, inputJar);
@@ -468,7 +466,8 @@ final class JavaInfoBuildHelper {
             .setProgressMessage("Stamping target label into jar %s", inputJar.getFilename())
             .addCommandLine(commandLine.build())
             .useDefaultShellEnvironment()
-            .setMnemonic("JavaIjar");
+            .setMnemonic("JavaIjar")
+            .setExecGroup(execGroup);
     actions.registerAction(actionBuilder.build(actions.getActionConstructionContext()));
     return outputJar;
   }

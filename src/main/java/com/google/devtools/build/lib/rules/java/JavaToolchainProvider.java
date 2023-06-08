@@ -30,7 +30,6 @@ import com.google.devtools.build.lib.analysis.RuleErrorConsumer;
 import com.google.devtools.build.lib.analysis.platform.ToolchainInfo;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.Depset;
-import com.google.devtools.build.lib.collect.nestedset.Depset.ElementType;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.BuiltinProvider;
@@ -56,12 +55,10 @@ public final class JavaToolchainProvider extends NativeInfo
   /** Returns the Java Toolchain associated with the rule being analyzed or {@code null}. */
   public static JavaToolchainProvider from(RuleContext ruleContext) {
     ToolchainInfo toolchainInfo =
-        ruleContext
-            .getToolchainContext()
-            .forToolchainType(
-                ruleContext
-                    .getPrerequisite(JavaRuleClasses.JAVA_TOOLCHAIN_TYPE_ATTRIBUTE_NAME)
-                    .getLabel());
+        ruleContext.getToolchainInfo(
+            ruleContext
+                .getPrerequisite(JavaRuleClasses.JAVA_TOOLCHAIN_TYPE_ATTRIBUTE_NAME)
+                .getLabel());
     return from(toolchainInfo, ruleContext);
   }
 
@@ -117,7 +114,6 @@ public final class JavaToolchainProvider extends NativeInfo
       @Nullable Artifact oneVersionAllowlist,
       Artifact genClass,
       @Nullable Artifact depsChecker,
-      @Nullable Artifact resourceJarBuilder,
       @Nullable Artifact timezoneData,
       FilesToRunProvider ijar,
       ImmutableListMultimap<String, String> compatibleJavacOptions,
@@ -145,7 +141,6 @@ public final class JavaToolchainProvider extends NativeInfo
         oneVersionAllowlist,
         genClass,
         depsChecker,
-        resourceJarBuilder,
         timezoneData,
         ijar,
         compatibleJavacOptions,
@@ -179,7 +174,6 @@ public final class JavaToolchainProvider extends NativeInfo
   @Nullable private final Artifact oneVersionAllowlist;
   private final Artifact genClass;
   @Nullable private final Artifact depsChecker;
-  @Nullable private final Artifact resourceJarBuilder;
   @Nullable private final Artifact timezoneData;
   private final FilesToRunProvider ijar;
   private final ImmutableListMultimap<String, String> compatibleJavacOptions;
@@ -213,7 +207,6 @@ public final class JavaToolchainProvider extends NativeInfo
       @Nullable Artifact oneVersionAllowlist,
       Artifact genClass,
       @Nullable Artifact depsChecker,
-      @Nullable Artifact resourceJarBuilder,
       @Nullable Artifact timezoneData,
       FilesToRunProvider ijar,
       ImmutableListMultimap<String, String> compatibleJavacOptions,
@@ -246,7 +239,6 @@ public final class JavaToolchainProvider extends NativeInfo
     this.oneVersionAllowlist = oneVersionAllowlist;
     this.genClass = genClass;
     this.depsChecker = depsChecker;
-    this.resourceJarBuilder = resourceJarBuilder;
     this.timezoneData = timezoneData;
     this.ijar = ijar;
     this.compatibleJavacOptions = compatibleJavacOptions;
@@ -357,12 +349,6 @@ public final class JavaToolchainProvider extends NativeInfo
     return oneVersionAllowlist;
   }
 
-  /** Return the {@link Artifact} of the allowlist used by the one-version compliance checker. */
-  @Nullable
-  public Artifact getOneVersionWhitelist() {
-    return oneVersionAllowlist;
-  }
-
   /** Returns the {@link Artifact} of the GenClass deploy jar */
   public Artifact getGenClass() {
     return genClass;
@@ -378,11 +364,6 @@ public final class JavaToolchainProvider extends NativeInfo
   public Artifact getDepsCheckerForStarlark(StarlarkThread thread) throws EvalException {
     checkPrivateAccess(thread);
     return depsChecker();
-  }
-
-  @Nullable
-  public Artifact getResourceJarBuilder() {
-    return resourceJarBuilder;
   }
 
   /**
@@ -452,6 +433,7 @@ public final class JavaToolchainProvider extends NativeInfo
     return jacocoRunner;
   }
 
+  @Override
   public FilesToRunProvider getProguardAllowlister() {
     return proguardAllowlister;
   }
@@ -500,17 +482,17 @@ public final class JavaToolchainProvider extends NativeInfo
 
   @Override
   public Depset getStarlarkBootclasspath() {
-    return Depset.of(Artifact.TYPE, getBootclasspath().bootclasspath());
+    return Depset.of(Artifact.class, getBootclasspath().bootclasspath());
   }
 
   @Override
   public Depset getStarlarkJvmOptions() {
-    return Depset.of(ElementType.STRING, getJvmOptions());
+    return Depset.of(String.class, getJvmOptions());
   }
 
   @Override
   public Depset getStarlarkTools() {
-    return Depset.of(Artifact.TYPE, getTools());
+    return Depset.of(Artifact.class, getTools());
   }
 
   @Override

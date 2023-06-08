@@ -21,11 +21,13 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
+import com.google.devtools.build.lib.bazel.bzlmod.BazelLockFileFunction;
 import com.google.devtools.build.lib.bazel.bzlmod.BazelModuleResolutionFunction;
 import com.google.devtools.build.lib.bazel.bzlmod.FakeRegistry;
 import com.google.devtools.build.lib.bazel.bzlmod.ModuleFileFunction;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.BazelCompatibilityMode;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.CheckDirectDepsMode;
+import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.LockfileMode;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue.Injected;
@@ -57,7 +59,8 @@ public class LabelBuildSettingTest extends BuildViewTestCase {
         PrecomputedValue.injected(
             BazelModuleResolutionFunction.CHECK_DIRECT_DEPENDENCIES, CheckDirectDepsMode.WARNING),
         PrecomputedValue.injected(
-            BazelModuleResolutionFunction.BAZEL_COMPATIBILITY_MODE, BazelCompatibilityMode.ERROR));
+            BazelModuleResolutionFunction.BAZEL_COMPATIBILITY_MODE, BazelCompatibilityMode.ERROR),
+        PrecomputedValue.injected(BazelLockFileFunction.LOCKFILE_MODE, LockfileMode.OFF));
   }
 
   private void writeRulesBzl(String type) throws Exception {
@@ -141,7 +144,7 @@ public class LabelBuildSettingTest extends BuildViewTestCase {
 
     useConfiguration(
         ImmutableMap.of(
-            "//test:my_label_flag", Label.parseAbsoluteUnchecked("//test:command_line")));
+            "//test:my_label_flag", Label.parseCanonicalUnchecked("//test:command_line")));
 
     ConfiguredTarget b = getConfiguredTarget("//test:my_rule");
     assertThat(b.get("value")).isEqualTo("command_line_value");
@@ -169,7 +172,7 @@ public class LabelBuildSettingTest extends BuildViewTestCase {
     reporter.removeHandler(failFastHandler);
     useConfiguration(
         ImmutableMap.of(
-            "//test:my_label_flag", Label.parseAbsoluteUnchecked("//test:command_line")));
+            "//test:my_label_flag", Label.parseCanonicalUnchecked("//test:command_line")));
     getConfiguredTarget("//test:selector");
     assertContainsEvent(
         "configurable attribute \"value\" in //test:selector doesn't match this configuration");
@@ -197,7 +200,7 @@ public class LabelBuildSettingTest extends BuildViewTestCase {
     reporter.removeHandler(failFastHandler);
     useConfiguration(
         ImmutableMap.of(
-            "//test:my_label_flag", Label.parseAbsoluteUnchecked("//test:command_line")));
+            "//test:my_label_flag", Label.parseCanonicalUnchecked("//test:command_line")));
     getConfiguredTarget("//test:selector");
     assertContainsEvent(
         "configurable attribute \"value\" in //test:selector doesn't match this configuration");

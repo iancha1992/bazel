@@ -7,7 +7,7 @@ Book: /_book.yaml
 
 This page describes the toolchain framework, which is a way for rule authors to
 decouple their rule logic from platform-based selection of tools. It is
-recommended to read the [rules](/rules/rules) and [platforms](/docs/platforms)
+recommended to read the [rules](/extending/rules) and [platforms](/extending/platforms)
 pages before continuing. This page covers why toolchains are needed, how to
 define and use them, and how Bazel selects an appropriate toolchain based on
 platform constraints.
@@ -173,7 +173,7 @@ def _bar_binary_impl(ctx):
 ```
 
 `ctx.toolchains["//bar_tools:toolchain_type"]` returns the
-[`ToolchainInfo` provider](/rules/lib/platform_common#ToolchainInfo)
+[`ToolchainInfo` provider](/rules/lib/toplevel/platform_common#ToolchainInfo)
 of whatever target Bazel resolved the toolchain dependency to. The fields of the
 `ToolchainInfo` object are set by the underlying tool's rule; in the next
 section, this rule is defined such that there is a `barcinfo` field that wraps
@@ -205,9 +205,9 @@ bar_binary = rule(
 ```
 
 When an optional toolchain type cannot be resolved, analysis continues, and the
-result of `ctx.toolchains[""//bar_tools:toolchain_type"]` is `None`.
+result of `ctx.toolchains["//bar_tools:toolchain_type"]` is `None`.
 
-The [`config_common.toolchain_type`](/rules/lib/config_common#toolchain_type)
+The [`config_common.toolchain_type`](/rules/lib/toplevel/config_common#toolchain_type)
 function defaults to mandatory.
 
 The following forms can be used:
@@ -407,7 +407,7 @@ bar_toolchain = rule(
 )
 ```
 
-The use of [`attr.label`](/rules/lib/attr#label) is the same as for a standard rule,
+The use of [`attr.label`](/rules/lib/toplevel/attr#label) is the same as for a standard rule,
 but the meaning of the `cfg` parameter is slightly different.
 
 The dependency from a target (called the "parent") to a toolchain via toolchain
@@ -474,7 +474,7 @@ This will end up building `//bar_tools:barc_linux` but not
 
 ## Toolchain resolution {:#toolchain-resolution}
 
-Note: [Some Bazel rules](/concepts/platforms-intro#status) do not yet support
+Note: [Some Bazel rules](/concepts/platforms#status) do not yet support
 toolchain resolution.
 
 For each target that uses toolchains, Bazel's toolchain resolution procedure
@@ -486,9 +486,9 @@ platform for the current target.
 
 The available execution platforms and toolchains are gathered from the
 `WORKSPACE` file via
-[`register_execution_platforms`](/rules/lib/globals#register_execution_platforms)
+[`register_execution_platforms`](/rules/lib/globals/workspace#register_execution_platforms)
 and
-[`register_toolchains`](/rules/lib/globals#register_toolchains).
+[`register_toolchains`](/rules/lib/globals/workspace#register_toolchains).
 Additional execution platforms and toolchains may also be specified on the
 command line via
 [`--extra_execution_platforms`](/reference/command-line-reference#flag--extra_execution_platforms)
@@ -510,7 +510,7 @@ The resolution steps are as follows.
 1. If the target being built specifies the
    [`exec_compatible_with` attribute](/reference/be/common-definitions#common.exec_compatible_with)
    (or its rule definition specifies the
-   [`exec_compatible_with` argument](/rules/lib/globals#rule.exec_compatible_with)),
+   [`exec_compatible_with` argument](/rules/lib/globals/bzl#rule.exec_compatible_with)),
    the list of available execution platforms is filtered to remove
    any that do not match the execution constraints.
 
@@ -530,7 +530,7 @@ In cases where the same target can be built in multiple configurations (such as
 for different CPUs) within the same build, the resolution procedure is applied
 independently to each version of the target.
 
-If the rule uses [execution groups](/reference/exec-groups), each execution
+If the rule uses [execution groups](/extending/exec-groups), each execution
 group performs toolchain resolution separately, and each has its own execution
 platform and toolchains.
 
@@ -542,8 +542,8 @@ provides verbose output for toolchain types or target names that match the regex
 can use `.*` to output all information. Bazel will output names of toolchains it
 checks and skips during the resolution process.
 
-If you'd like to see which [`cquery`](/docs/cquery) dependencies are from toolchain
-resolution, use `cquery`'s [`--transitions`](/docs/cquery#transitions) flag:
+If you'd like to see which [`cquery`](/query/cquery) dependencies are from toolchain
+resolution, use `cquery`'s [`--transitions`](/query/cquery#transitions) flag:
 
 ```
 # Find all direct dependencies of //cc:my_cc_lib. This includes explicitly

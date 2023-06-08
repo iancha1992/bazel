@@ -153,25 +153,16 @@ public final class AnalysisPhaseRunner {
         reportTargets(env, analysisResult.getTargetsToBuild());
       }
 
-      for (ConfiguredTarget target : analysisResult.getTargetsToSkip()) {
-        BuildConfigurationValue config =
-            env.getSkyframeExecutor()
-                .getConfiguration(env.getReporter(), target.getConfigurationKey());
-        Label label = target.getLabel();
-        env.getEventBus()
-            .post(
-                new AbortedEvent(
-                    BuildEventIdUtil.targetCompleted(label, config.getEventId()),
-                    AbortReason.SKIPPED,
-                    String.format("Target %s build was skipped.", label),
-                    label));
-      }
+      postAbortedEventsForSkippedTargets(env, analysisResult.getTargetsToSkip());
     } else {
       env.getReporter().handle(Event.progress("Loading complete."));
       env.getReporter().post(new NoAnalyzeEvent());
       logger.atInfo().log("No analysis requested, so finished");
       FailureDetail failureDetail =
-          BuildView.createAnalysisFailureDetail(loadingResult, null, null);
+          BuildView.createAnalysisFailureDetail(
+              loadingResult,
+              /* skyframeAnalysisResult= */ null,
+              /* hasTopLevelTargetsWithConfigurationError= */ false);
       if (failureDetail != null) {
         throw new BuildFailedException(
             failureDetail.getMessage(), DetailedExitCode.of(failureDetail));
@@ -179,6 +170,23 @@ public final class AnalysisPhaseRunner {
     }
 
     return analysisResult;
+  }
+
+  static void postAbortedEventsForSkippedTargets(
+      CommandEnvironment env, ImmutableSet<ConfiguredTarget> targetsToSkip) {
+    for (ConfiguredTarget target : targetsToSkip) {
+      BuildConfigurationValue config =
+          env.getSkyframeExecutor()
+              .getConfiguration(env.getReporter(), target.getConfigurationKey());
+      Label label = target.getLabel();
+      env.getEventBus()
+          .post(
+              new AbortedEvent(
+                  BuildEventIdUtil.targetCompleted(label, config.getEventId()),
+                  AbortReason.SKIPPED,
+                  String.format("Target %s build was skipped.", label),
+                  label));
+    }
   }
 
   private static TargetPatternPhaseValue evaluateTargetPatterns(
@@ -247,19 +255,21 @@ public final class AnalysisPhaseRunner {
               request.getAspectsParameters(),
               request.getViewOptions(),
               request.getKeepGoing(),
+              request.getViewOptions().skipIncompatibleExplicitTargets,
               request.getCheckForActionConflicts(),
-              request.getLoadingPhaseThreadCount(),
+              env.getQuiescingExecutors(),
               request.getTopLevelArtifactContext(),
               request.reportIncompatibleTargets(),
               env.getReporter(),
               env.getEventBus(),
               env.getRuntime().getBugReporter(),
-              /*includeExecutionPhase=*/ false,
-              /*mergedPhasesExecutionJobsCount=*/ 0,
-              /*resourceManager=*/ null,
-              /*buildResultListener=*/ null,
-              /*executionSetupCallback*/ null,
-              /*buildConfigurationsCreatedCallback=*/ null);
+              /* includeExecutionPhase= */ false,
+              /* skymeldAnalysisOverlapPercentage= */ 0,
+              /* resourceManager= */ null,
+              /* buildResultListener= */ null,
+              /* executionSetupCallback= */ null,
+              /* buildConfigurationsCreatedCallback= */ null,
+              /* buildDriverKeyTestContext= */ null);
     } catch (BuildFailedException | TestExecException | AbruptExitException unexpected) {
       throw new IllegalStateException("Unexpected execution exception type: ", unexpected);
     }
@@ -324,10 +334,7 @@ public final class AnalysisPhaseRunner {
     }
 
     for (Entry<AspectKey, ConfiguredAspect> entry : analysisResult.getAspectsMap().entrySet()) {
-      env.getEventBus()
-          .post(
-              AspectAnalyzedEvent.createWithoutFurtherSymlinkPlanting(
-                  entry.getKey(), entry.getValue()));
+      env.getEventBus().post(AspectAnalyzedEvent.create(entry.getKey(), entry.getValue()));
     }
   }
 

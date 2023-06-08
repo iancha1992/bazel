@@ -57,6 +57,8 @@ fi
 
 JAVA_TOOLCHAIN="@bazel_tools//tools/jdk:toolchain"
 
+JAVA_TOOLCHAIN_TYPE="@bazel_tools//tools/jdk:toolchain_type"
+
 JAVA_TOOLS_ZIP="$1"; shift
 if [[ "${JAVA_TOOLS_ZIP}" != "released" ]]; then
   if [[ "${JAVA_TOOLS_ZIP}" == file* ]]; then
@@ -82,7 +84,8 @@ if [[ "${JAVA_TOOLS_PREBUILT_ZIP}" != "released" ]]; then
   inplace-sed "/override_repository=remote_java_tools=/d" "$TEST_TMPDIR/bazelrc"
   inplace-sed "/override_repository=remote_java_tools_linux=/d" "$TEST_TMPDIR/bazelrc"
   inplace-sed "/override_repository=remote_java_tools_windows=/d" "$TEST_TMPDIR/bazelrc"
-  inplace-sed "/override_repository=remote_java_tools_darwin=/d" "$TEST_TMPDIR/bazelrc"
+  inplace-sed "/override_repository=remote_java_tools_darwin_x86_64=/d" "$TEST_TMPDIR/bazelrc"
+  inplace-sed "/override_repository=remote_java_tools_darwin_arm64=/d" "$TEST_TMPDIR/bazelrc"
 fi
 JAVA_TOOLS_PREBUILT_ZIP_FILE_URL=${JAVA_TOOLS_PREBUILT_ZIP_FILE_URL:-}
 
@@ -129,7 +132,11 @@ http_archive(
     urls = ["${JAVA_TOOLS_PREBUILT_ZIP_FILE_URL}"]
 )
 http_archive(
-    name = "remote_java_tools_darwin",
+    name = "remote_java_tools_darwin_x86_64",
+    urls = ["${JAVA_TOOLS_PREBUILT_ZIP_FILE_URL}"]
+)
+http_archive(
+    name = "remote_java_tools_darwin_arm64",
     urls = ["${JAVA_TOOLS_PREBUILT_ZIP_FILE_URL}"]
 )
 EOF
@@ -314,6 +321,7 @@ java_custom_library = rule(
     "resources": attr.label_list(allow_files=True),
     "_java_toolchain": attr.label(default = Label("${JAVA_TOOLCHAIN}")),
   },
+  toolchains = ["${JAVA_TOOLCHAIN_TYPE}"],
   fragments = ["java"]
 )
 EOF
@@ -323,6 +331,12 @@ function test_build_hello_world() {
   write_hello_library_files
 
   bazel build //java/main:main &> $TEST_log || fail "build failed"
+}
+
+function test_build_hello_world_reduced_classpath() {
+  write_hello_library_files
+
+  bazel build --experimental_java_classpath=bazel //java/main:main &> $TEST_log || fail "build failed"
 }
 
 function test_worker_strategy_is_default() {
@@ -486,6 +500,7 @@ java_custom_library = rule(
     "sourcepath": attr.label_list(),
     "_java_toolchain": attr.label(default = Label("${JAVA_TOOLCHAIN}")),
   },
+  toolchains = ["${JAVA_TOOLCHAIN_TYPE}"],
   fragments = ["java"]
 )
 EOF
@@ -556,6 +571,7 @@ java_custom_library = rule(
     "sourcepath": attr.label_list(),
     "_java_toolchain": attr.label(default = Label("${JAVA_TOOLCHAIN}")),
   },
+  toolchains = ["${JAVA_TOOLCHAIN_TYPE}"],
   fragments = ["java"]
 )
 EOF
@@ -1463,6 +1479,7 @@ java_custom_library = rule(
     "jar": attr.label(allow_files=True),
     "_java_toolchain": attr.label(default = Label("${JAVA_TOOLCHAIN}")),
   },
+  toolchains = ["${JAVA_TOOLCHAIN_TYPE}"],
   fragments = ["java"]
 )
 EOF
@@ -1514,7 +1531,8 @@ my_rule = rule(
     'output_source_jar' : attr.string(),
     'source_jars' : attr.label_list(allow_files=['.jar']),
     "_java_toolchain": attr.label(default = Label("@bazel_tools//tools/jdk:remote_toolchain")),
-  }
+  },
+  toolchains = ["${JAVA_TOOLCHAIN_TYPE}"],
 )
 EOF
 

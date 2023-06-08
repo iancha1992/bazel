@@ -25,11 +25,13 @@ import com.google.devtools.build.lib.analysis.test.TestConfiguration.TestOptions
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.analysis.util.DummyTestFragment;
 import com.google.devtools.build.lib.analysis.util.DummyTestFragment.DummyTestOptions;
+import com.google.devtools.build.lib.bazel.bzlmod.BazelLockFileFunction;
 import com.google.devtools.build.lib.bazel.bzlmod.BazelModuleResolutionFunction;
 import com.google.devtools.build.lib.bazel.bzlmod.FakeRegistry;
 import com.google.devtools.build.lib.bazel.bzlmod.ModuleFileFunction;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.BazelCompatibilityMode;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.CheckDirectDepsMode;
+import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.LockfileMode;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.RuleTransitionData;
@@ -74,7 +76,8 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
         PrecomputedValue.injected(
             BazelModuleResolutionFunction.CHECK_DIRECT_DEPENDENCIES, CheckDirectDepsMode.WARNING),
         PrecomputedValue.injected(
-            BazelModuleResolutionFunction.BAZEL_COMPATIBILITY_MODE, BazelCompatibilityMode.ERROR));
+            BazelModuleResolutionFunction.BAZEL_COMPATIBILITY_MODE, BazelCompatibilityMode.ERROR),
+        PrecomputedValue.injected(BazelLockFileFunction.LOCKFILE_MODE, LockfileMode.OFF));
   }
 
   @Override
@@ -163,7 +166,7 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
         "test/transitions.bzl",
         "def _impl(settings, attr):",
         "  return {'//command_line_option:foo': ",
-        "    settings['//command_line_option:foo']+'->post-transition'}",
+        "    settings['//command_line_option:foo'].replace('pre', 'post')}",
         "my_transition = transition(",
         "  implementation = _impl,",
         "  inputs = ['//command_line_option:foo'],",
@@ -190,7 +193,7 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
 
     BuildConfigurationValue configuration = getConfiguration(getConfiguredTarget("//test"));
     assertThat(configuration.getOptions().get(DummyTestOptions.class).foo)
-        .isEqualTo("pre-transition->post-transition");
+        .isEqualTo("post-transition");
   }
 
   @Test
@@ -429,7 +432,7 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
             configuration
                 .getOptions()
                 .getStarlarkOptions()
-                .get(Label.parseAbsoluteUnchecked("//test:cute-animal-fact")))
+                .get(Label.parseCanonicalUnchecked("//test:cute-animal-fact")))
         .isEqualTo("puffins mate for life");
   }
 
@@ -453,7 +456,7 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
             configuration
                 .getOptions()
                 .getStarlarkOptions()
-                .get(Label.parseAbsoluteUnchecked("//test:cute-animal-fact")))
+                .get(Label.parseCanonicalUnchecked("//test:cute-animal-fact")))
         .isEqualTo("puffins mate for life");
   }
 
@@ -579,7 +582,7 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
 
     BuildConfigurationValue configuration = getConfiguration(getConfiguredTarget("//test"));
     assertThat(configuration.getOptions().getStarlarkOptions())
-        .doesNotContainKey(Label.parseAbsoluteUnchecked("//test:cute-animal-fact"));
+        .doesNotContainKey(Label.parseCanonicalUnchecked("//test:cute-animal-fact"));
   }
 
   @Test
@@ -631,7 +634,8 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
     scratch.file(
         "test/transitions.bzl",
         "def _transition_impl(settings, attr):",
-        "  return {'//test:cute-animal-fact': settings['//test:cute-animal-fact']+' <- TRUE'}",
+        "  new_value = settings['//test:cute-animal-fact'].replace('cows', 'platypuses')",
+        "  return {'//test:cute-animal-fact': new_value}",
         "my_transition = transition(",
         "  implementation = _transition_impl,",
         "  inputs = ['//test:cute-animal-fact'],",
@@ -644,8 +648,8 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
             configuration
                 .getOptions()
                 .getStarlarkOptions()
-                .get(Label.parseAbsoluteUnchecked("//test:cute-animal-fact")))
-        .isEqualTo("cows produce more milk when they listen to soothing music <- TRUE");
+                .get(Label.parseCanonicalUnchecked("//test:cute-animal-fact")))
+        .isEqualTo("platypuses produce more milk when they listen to soothing music");
   }
 
   @Test
@@ -653,7 +657,8 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
     scratch.file(
         "test/transitions.bzl",
         "def _transition_impl(settings, attr):",
-        "  return {'//test:cute-animal-fact': settings['//test:cute-animal-fact']+' <- TRUE'}",
+        "  now_true = settings['//test:cute-animal-fact'].replace('FALSE', 'TRUE')",
+        "  return {'//test:cute-animal-fact': now_true}",
         "my_transition = transition(",
         "  implementation = _transition_impl,",
         "  inputs = ['//test:cute-animal-fact'],",
@@ -661,14 +666,14 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
         ")");
     writeRulesBuildSettingsAndBUILDforBuildSettingTransitionTests();
 
-    useConfiguration(ImmutableMap.of("//test:cute-animal-fact", "rats are ticklish"));
+    useConfiguration(ImmutableMap.of("//test:cute-animal-fact", "rats are ticklish <- FALSE"));
 
     BuildConfigurationValue configuration = getConfiguration(getConfiguredTarget("//test"));
     assertThat(
             configuration
                 .getOptions()
                 .getStarlarkOptions()
-                .get(Label.parseAbsoluteUnchecked("//test:cute-animal-fact")))
+                .get(Label.parseCanonicalUnchecked("//test:cute-animal-fact")))
         .isEqualTo("rats are ticklish <- TRUE");
   }
 
@@ -763,11 +768,11 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
 
     ImmutableMap<Label, Object> starlarkOptions =
         getConfiguration(getConfiguredTarget("//test")).getOptions().getStarlarkOptions();
-    assertThat(starlarkOptions.get(Label.parseAbsoluteUnchecked("//test:cute-animal-fact")))
+    assertThat(starlarkOptions.get(Label.parseCanonicalUnchecked("//test:cute-animal-fact")))
         .isEqualTo("puffins mate for life");
-    assertThat(starlarkOptions).doesNotContainKey(Label.parseAbsoluteUnchecked("//test:fact"));
+    assertThat(starlarkOptions).doesNotContainKey(Label.parseCanonicalUnchecked("//test:fact"));
     assertThat(starlarkOptions.keySet())
-        .containsExactly(Label.parseAbsoluteUnchecked("//test:cute-animal-fact"));
+        .containsExactly(Label.parseCanonicalUnchecked("//test:cute-animal-fact"));
   }
 
   @Test
@@ -801,7 +806,7 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
             configuration
                 .getOptions()
                 .getStarlarkOptions()
-                .get(Label.parseAbsoluteUnchecked("//test:cute-animal-fact")))
+                .get(Label.parseCanonicalUnchecked("//test:cute-animal-fact")))
         .isEqualTo("puffins mate for life");
   }
 
@@ -1538,7 +1543,7 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
 
     ConfiguredTargetAndData ct = getConfiguredTargetAndData("//test");
     assertNoEvents();
-    Rule testTarget = (Rule) ct.getTarget();
+    Rule testTarget = (Rule) ct.getTargetForTesting();
     ConfigurationTransition ruleTransition =
         testTarget
             .getRuleClassObject()
@@ -1684,7 +1689,7 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
         getConfiguration(getConfiguredTarget("//test")).getOptions().getStarlarkOptions();
     assertNoEvents();
     assertThat(
-            (List<?>) starlarkOptions.get(Label.parseAbsoluteUnchecked("//test:cute-animal-fact")))
+            (List<?>) starlarkOptions.get(Label.parseCanonicalUnchecked("//test:cute-animal-fact")))
         .containsExactly("puffins mate for life");
   }
 
@@ -1785,7 +1790,7 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
                 .get(PlatformOptions.class)
                 .platforms)
         .containsExactly(
-            Label.parseAbsoluteUnchecked(
+            Label.parseCanonicalUnchecked(
                 TestConstants.LOCAL_CONFIG_PLATFORM_PACKAGE_ROOT + ":host"));
   }
 
@@ -1833,7 +1838,7 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
                 .getOptions()
                 .get(PlatformOptions.class)
                 .platforms)
-        .containsExactly(Label.parseAbsoluteUnchecked("//platforms:my_other_platform"));
+        .containsExactly(Label.parseCanonicalUnchecked("//platforms:my_other_platform"));
   }
 
   /* If the transition doesn't change --cpu, it doesn't constitute a platform change. */
@@ -1876,7 +1881,7 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
                 .getOptions()
                 .get(PlatformOptions.class)
                 .platforms)
-        .containsExactly(Label.parseAbsoluteUnchecked("//platforms:my_platform"));
+        .containsExactly(Label.parseCanonicalUnchecked("//platforms:my_platform"));
   }
 
   @Test

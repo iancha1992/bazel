@@ -16,10 +16,7 @@ package com.google.devtools.build.lib.rules.cpp;
 
 import static com.google.devtools.build.lib.rules.cpp.CcModule.isBuiltIn;
 
-import com.google.common.base.Preconditions;
-import com.google.common.base.Verify;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.analysis.config.CompilationMode;
@@ -36,14 +33,9 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.rules.apple.AppleCommandLineOptions;
-import com.google.devtools.build.lib.rules.apple.AppleCommandLineOptions.AppleBitcodeMode;
-import com.google.devtools.build.lib.rules.apple.AppleConfiguration;
-import com.google.devtools.build.lib.rules.apple.AppleConfiguration.AppleCpus;
-import com.google.devtools.build.lib.rules.apple.ApplePlatform;
 import com.google.devtools.build.lib.starlarkbuildapi.cpp.CppConfigurationApi;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import java.util.EnumMap;
 import javax.annotation.Nullable;
 import net.starlark.java.annot.StarlarkMethod;
 import net.starlark.java.eval.EvalException;
@@ -55,7 +47,7 @@ import net.starlark.java.eval.StarlarkThread;
 import net.starlark.java.eval.StarlarkValue;
 
 /**
- * This class represents the C/C++ parts of the {@link BuildConfigurationValue}, including the host
+ * This class represents the C/C++ parts of the {@link BuildConfigurationValue}, including the exec
  * architecture, target architecture, compiler version, and a standard library version.
  */
 @Immutable
@@ -63,7 +55,7 @@ import net.starlark.java.eval.StarlarkValue;
 public final class CppConfiguration extends Fragment
     implements CppConfigurationApi<InvalidConfigurationException> {
   /**
-   * String indicating a Mac system, for example when used in a crosstool configuration's host or
+   * String indicating a Mac system, for example when used in a crosstool configuration's exec or
    * target system name.
    */
   public static final String MAC_SYSTEM_NAME = "x86_64-apple-macosx";
@@ -188,7 +180,6 @@ public final class CppConfiguration extends Fragment
   private final boolean isToolConfigurationDoNotUseWillBeRemovedFor129045294;
 
   private final boolean appleGenerateDsym;
-  private final AppleBitcodeMode appleBitcodeMode;
 
   public CppConfiguration(BuildOptions options) throws InvalidConfigurationException {
     CppOptions cppOptions = options.get(CppOptions.class);
@@ -207,12 +198,18 @@ public final class CppConfiguration extends Fragment
     if (cppOptions.getFdoOptimize() != null) {
       if (cppOptions.getFdoOptimize().startsWith("//")) {
         try {
-          fdoProfileLabel = Label.parseAbsolute(cppOptions.getFdoOptimize(), ImmutableMap.of());
+          fdoProfileLabel = Label.parseCanonical(cppOptions.getFdoOptimize());
         } catch (LabelSyntaxException e) {
           throw new InvalidConfigurationException(e);
         }
       } else {
         fdoPath = PathFragment.create(cppOptions.getFdoOptimize());
+        if (!fdoPath.isAbsolute()) {
+          throw new InvalidConfigurationException(
+              "Path of '"
+                  + fdoPath.getPathString()
+                  + "' in --fdo_optimize has to be either an absolute path or a label.");
+        }
         try {
           // We don't check for file existence, but at least the filename should be well-formed.
           FileSystemUtils.checkBaseName(fdoPath.getBaseName());
@@ -291,35 +288,28 @@ public final class CppConfiguration extends Fragment
                 && compilationMode == CompilationMode.FASTBUILD);
     this.compilationMode = compilationMode;
     this.collectCodeCoverage = commonOptions.collectCodeCoverage;
-    this.isToolConfigurationDoNotUseWillBeRemovedFor129045294 =
-        commonOptions.isHost || commonOptions.isExec;
+    this.isToolConfigurationDoNotUseWillBeRemovedFor129045294 = commonOptions.isExec;
     this.appleGenerateDsym =
         (cppOptions.appleGenerateDsym
             || (cppOptions.appleEnableAutoDsymDbg && compilationMode == CompilationMode.DBG));
-    this.appleBitcodeMode =
-        computeAppleBitcodeMode(options.get(AppleCommandLineOptions.class), commonOptions);
-  }
-
-  private static AppleBitcodeMode computeAppleBitcodeMode(
-      AppleCommandLineOptions options, CoreOptions commonOptions) {
-    ApplePlatform.PlatformType applePlatformType =
-        Preconditions.checkNotNull(options.applePlatformType, "applePlatformType");
-    AppleCpus appleCpus = AppleCpus.create(options, commonOptions);
-    EnumMap<ApplePlatform.PlatformType, AppleBitcodeMode> platformBitcodeModes =
-        AppleConfiguration.collectBitcodeModes(options.appleBitcodeMode);
-
-    return AppleConfiguration.getAppleBitcodeMode(
-        applePlatformType, appleCpus, platformBitcodeModes);
   }
 
   /** Returns the label of the <code>cc_compiler</code> rule for the C++ configuration. */
   @StarlarkConfigurationField(
       name = "cc_toolchain",
       doc = "The label of the target describing the C++ toolchain",
-      defaultLabel = "//tools/cpp:crosstool",
+      defaultLabel = "//tools/cpp:toolchain",
       defaultInToolRepository = true)
+  @Nullable
   public Label getRuleProvidingCcToolchainProvider() {
-    return cppOptions.crosstoolTop;
+    if (cppOptions.enableCcToolchainResolution) {
+      // In case C++ toolchain resolution is enabled, crosstool_top flags are not used.
+      // Returning null prevents additional work on the flags values and makes it possible to
+      // remove `--crosstool_top` flags.
+      return null;
+    } else {
+      return cppOptions.crosstoolTop;
+    }
   }
 
   /** Returns the configured current compilation mode. */
@@ -368,10 +358,6 @@ public final class CppConfiguration extends Fragment
 
   public boolean isCSFdo() {
     return cppOptions.isCSFdo();
-  }
-
-  public boolean ignoreParamFile() {
-    return cppOptions.ignoreParamFile;
   }
 
   public boolean useArgsParamsFile() {
@@ -484,10 +470,6 @@ public final class CppConfiguration extends Fragment
     return cppOptions.experimentalLinkStaticLibrariesOnce;
   }
 
-  public boolean experimentalEnableTargetExportCheck() {
-    return cppOptions.experimentalEnableTargetExportCheck;
-  }
-
   public boolean experimentalCcSharedLibraryDebug() {
     return cppOptions.experimentalCcSharedLibraryDebug;
   }
@@ -506,10 +488,6 @@ public final class CppConfiguration extends Fragment
 
   public boolean getInmemoryDotdFiles() {
     return cppOptions.inmemoryDotdFiles;
-  }
-
-  public boolean getParseHeadersSkippedIfCorrespondingSrcsFound() {
-    return cppOptions.parseHeadersSkippedIfCorrespondingSrcsFound;
   }
 
   public boolean getUseInterfaceSharedLibraries() {
@@ -597,9 +575,13 @@ public final class CppConfiguration extends Fragment
     }
 
     // This is an assertion check vs. user error because users can't trigger this state.
-    Verify.verify(
-        !(buildOptions.get(CoreOptions.class).isHost && cppOptions.isFdo()),
-        "FDO state should not propagate to the host configuration");
+    // TODO(b/253313672): uncomment the below and check tests don't fail. This was originally set
+    // check the exec configuration doesn't apply FDO settings. With the host configuration gone
+    // we should migrate this check to the exec config. Since there's a chance of breakage it's best
+    // to test this as its own dedicated change.
+    // Verify.verify(
+    //   !(buildOptions.get(CoreOptions.class).isExec && cppOptions.isFdo()),
+    // "FDO state should not propagate to the exec configuration");
   }
 
   @Override
@@ -730,9 +712,9 @@ public final class CppConfiguration extends Fragment
   public Label getTargetLibcTopLabel() {
     if (!isToolConfigurationDoNotUseWillBeRemovedFor129045294) {
       // This isn't for a platform-enabled C++ toolchain (legacy C++ toolchains evaluate in the
-      // target configuration while platform-enabled toolchains evaluate in the host/exec
-      // configuration). targetLibcTopLabel is only intended for platform-enabled toolchains and can
-      // cause errors otherwise.
+      // target configuration while platform-enabled toolchains evaluate in the exec configuration).
+      // targetLibcTopLabel is only intended for platform-enabled toolchains and can cause errors
+      // otherwise.
       //
       // For example: if a legacy-configured toolchain inherits a --grte_top pointing to an Android
       // runtime alias that select()s on a target Android CPU and an iOS dep changes the CPU to an
@@ -741,16 +723,6 @@ public final class CppConfiguration extends Fragment
       return null;
     }
     return cppOptions.targetLibcTopLabel;
-  }
-
-  @StarlarkMethod(name = "enable_legacy_cc_provider", documented = false, useStarlarkThread = true)
-  public boolean enableLegacyCcProviderForStarlark(StarlarkThread thread) throws EvalException {
-    CcModule.checkPrivateStarlarkificationAllowlist(thread);
-    return enableLegacyCcProvider();
-  }
-
-  public boolean enableLegacyCcProvider() {
-    return !cppOptions.disableLegacyCcProvider;
   }
 
   public boolean dontEnableHostNonhost() {
@@ -785,6 +757,12 @@ public final class CppConfiguration extends Fragment
     return cppOptions.disableNoCopts;
   }
 
+  @Override
+  public boolean disableNocoptsStarlark(StarlarkThread thread) throws EvalException {
+    CcModule.checkPrivateStarlarkificationAllowlist(thread);
+    return disableNoCopts();
+  }
+
   public boolean loadCcRulesFromBzl() {
     return cppOptions.loadCcRulesFromBzl;
   }
@@ -800,6 +778,10 @@ public final class CppConfiguration extends Fragment
 
   public boolean experimentalStarlarkCcImport() {
     return cppOptions.experimentalStarlarkCcImport;
+  }
+
+  public boolean useSchedulingMiddlemen() {
+    return cppOptions.useSchedulingMiddlemen;
   }
 
   public boolean strictHeaderCheckingFromStarlark() {
@@ -882,6 +864,7 @@ public final class CppConfiguration extends Fragment
     return generateLlvmLCov();
   }
 
+  @Nullable
   @Override
   public String fdoInstrumentStarlark(StarlarkThread thread) throws EvalException {
     checkInExpandedApiAllowlist(thread, "fdo_instrument");
@@ -915,13 +898,6 @@ public final class CppConfiguration extends Fragment
   }
 
   @Override
-  public boolean getExperimentalEnableTargetExportCheck(StarlarkThread thread)
-      throws EvalException {
-    CcModule.checkPrivateStarlarkificationAllowlist(thread);
-    return experimentalEnableTargetExportCheck();
-  }
-
-  @Override
   public boolean getExperimentalCcSharedLibraryDebug(StarlarkThread thread) throws EvalException {
     CcModule.checkPrivateStarlarkificationAllowlist(thread);
     return experimentalCcSharedLibraryDebug();
@@ -933,15 +909,9 @@ public final class CppConfiguration extends Fragment
     return experimentalPlatformCcTest();
   }
 
-  /**
-   * Returns the bitcode mode to use for compilation.
-   *
-   * <p>Users can control bitcode mode using the {@code apple_bitcode} build flag, but bitcode will
-   * be disabled for all simulator architectures regardless of this flag.
-   */
   @Override
-  public AppleBitcodeMode getAppleBitcodeMode() {
-    return appleBitcodeMode;
+  public String getAppleBitcodeMode() {
+    return "none";
   }
 
   @Override

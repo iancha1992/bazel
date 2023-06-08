@@ -14,8 +14,8 @@ executions from within the IDE, to awareness of Bazel structures such as syntax
 highlighting of the `BUILD` files.
 
 If you are interested in developing an editor or IDE plugin for Bazel, please
-join the `#ide` channel on the [Bazel Slack](https://slack.bazel.build) or email
-the [bazel-dev](https://groups.google.com/forum/#!forum/bazel-dev) mailing list.
+join the `#ide` channel on the [Bazel Slack](https://slack.bazel.build) or start
+a discussion on [GitHub](https://github.com/bazelbuild/bazel/discussions).
 
 ## IDEs and editors {:#ides-editors}
 
@@ -49,9 +49,10 @@ Plugin Repository and install the zip file from the IDE's plugin browser:
 
 ### Xcode {:#xcode}
 
-[Tulsi](https://tulsi.bazel.build){: .external} and
-[XCHammer](https://github.com/pinterest/xchammer){: .external} generate Xcode projects from
-Bazel `BUILD` files.
+[rules_xcodeproj](https://github.com/buildbuddy-io/rules_xcodeproj){: .external},
+[Tulsi](https://tulsi.bazel.build){: .external}, and
+[XCHammer](https://github.com/pinterest/xchammer){: .external} generate Xcode
+projects from Bazel `BUILD` files.
 
 ### Visual Studio Code {:#visual-studio-code}
 

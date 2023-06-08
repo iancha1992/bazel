@@ -24,14 +24,13 @@ import com.google.devtools.build.docgen.annot.DocCategory;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.LocationExpander;
 import com.google.devtools.build.lib.analysis.TemplateVariableInfo;
-import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkRuleContext;
-import com.google.devtools.build.lib.analysis.test.InstrumentedFilesInfo;
 import com.google.devtools.build.lib.packages.NativeInfo;
-import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
 import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.rules.cpp.CcCompilationContext;
-import com.google.devtools.build.lib.rules.cpp.CcToolchainProvider;
+import com.google.devtools.build.lib.rules.cpp.CcLinkingContext;
+import com.google.devtools.build.lib.rules.cpp.CppModuleMap.UmbrellaHeaderStrategy;
+import com.google.devtools.build.lib.rules.objc.IntermediateArtifacts.AlwaysLink;
 import com.google.devtools.build.lib.shell.ShellUtils;
 import com.google.devtools.build.lib.shell.ShellUtils.TokenizationException;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -74,7 +73,7 @@ public class ObjcStarlarkInternal implements StarlarkValue {
         @Param(name = "ctx", positional = false, named = true),
       })
   public CompilationAttributes createCompilationAttributes(StarlarkRuleContext starlarkRuleContext)
-      throws EvalException {
+      throws EvalException, InterruptedException {
     CompilationAttributes.Builder builder = new CompilationAttributes.Builder();
 
     CompilationAttributes.Builder.addHeadersFromRuleContext(
@@ -109,7 +108,8 @@ public class ObjcStarlarkInternal implements StarlarkValue {
         @Param(name = "flags", positional = false, defaultValue = "[]", named = true),
       })
   public Sequence<String> expandToolchainAndRuleContextVariables(
-      StarlarkRuleContext starlarkRuleContext, Sequence<?> flags) throws EvalException {
+      StarlarkRuleContext starlarkRuleContext, Sequence<?> flags)
+      throws EvalException, InterruptedException {
     if (flags.isEmpty()) {
       return Sequence.cast(flags, String.class, "flags");
     }
@@ -172,7 +172,22 @@ public class ObjcStarlarkInternal implements StarlarkValue {
       })
   public IntermediateArtifacts createIntermediateArtifacts(
       StarlarkRuleContext starlarkRuleContext) {
-    return ObjcRuleClasses.intermediateArtifacts(starlarkRuleContext.getRuleContext());
+    return new IntermediateArtifacts(starlarkRuleContext.getRuleContext());
+  }
+
+  @StarlarkMethod(
+      name = "j2objc_create_intermediate_artifacts",
+      documented = false,
+      parameters = {
+        @Param(name = "ctx", positional = false, named = true),
+      })
+  public IntermediateArtifacts j2objcCreateIntermediateArtifacts(
+      StarlarkRuleContext starlarkRuleContext) {
+    return new IntermediateArtifacts(
+        starlarkRuleContext.getRuleContext(),
+        /* archiveFileNameSuffix= */ "_j2objc",
+        UmbrellaHeaderStrategy.GENERATE,
+        AlwaysLink.TRUE);
   }
 
   @StarlarkMethod(
@@ -195,7 +210,7 @@ public class ObjcStarlarkInternal implements StarlarkValue {
     if (starlarkRuleContext != null) {
       return CompilationSupport.compilationArtifacts(starlarkRuleContext.getRuleContext());
     } else {
-      return new CompilationArtifacts.Builder().build();
+      return new CompilationArtifacts();
     }
   }
 
@@ -225,32 +240,6 @@ public class ObjcStarlarkInternal implements StarlarkValue {
   }
 
   @StarlarkMethod(
-      name = "instrumented_files_info",
-      documented = false,
-      parameters = {
-        @Param(name = "ctx", positional = false, named = true),
-        @Param(name = "cc_toolchain", positional = false, named = true),
-        @Param(name = "config", positional = false, named = true),
-        @Param(name = "object_files", positional = false, defaultValue = "[]", named = true),
-      })
-  public InstrumentedFilesInfo createInstrumentedFilesInfo(
-      StarlarkRuleContext starlarkRuleContext,
-      CcToolchainProvider ccToolchain,
-      BuildConfigurationValue config,
-      Sequence<?> objectFiles)
-      throws EvalException {
-    try {
-      return CompilationSupport.getInstrumentedFilesProvider(
-          starlarkRuleContext.getRuleContext(),
-          ccToolchain,
-          config,
-          Sequence.cast(objectFiles, Artifact.class, "object_files").getImmutableList());
-    } catch (RuleErrorException e) {
-      throw new EvalException(e);
-    }
-  }
-
-  @StarlarkMethod(
       name = "create_compilation_context",
       documented = false,
       parameters = {
@@ -268,6 +257,11 @@ public class ObjcStarlarkInternal implements StarlarkValue {
             positional = false,
             defaultValue = "[]",
             named = true),
+        @Param(
+            name = "implementation_cc_compilation_contexts",
+            positional = false,
+            defaultValue = "[]",
+            named = true),
         @Param(name = "defines", positional = false, defaultValue = "[]", named = true),
         @Param(name = "includes", positional = false, defaultValue = "[]", named = true),
       })
@@ -278,6 +272,7 @@ public class ObjcStarlarkInternal implements StarlarkValue {
       Sequence<?> providers,
       Sequence<?> directCcCompilationContexts,
       Sequence<?> ccCompilationContexts,
+      Sequence<?> implementationCcCompilationContexts,
       Sequence<?> defines,
       Sequence<?> includes)
       throws InterruptedException, EvalException {
@@ -293,11 +288,40 @@ public class ObjcStarlarkInternal implements StarlarkValue {
         .addCcCompilationContexts(
             Sequence.cast(
                 ccCompilationContexts, CcCompilationContext.class, "cc_compilation_contexts"))
+        .addImplementationCcCompilationContexts(
+            Sequence.cast(
+                implementationCcCompilationContexts,
+                CcCompilationContext.class,
+                "implementation_cc_compilation_contexts"))
         .addDefines(Sequence.cast(defines, String.class, "defines"))
         .addIncludes(
             Sequence.cast(includes, String.class, "includes").stream()
                 .map(PathFragment::create)
                 .collect(toImmutableList()))
         .build();
+  }
+
+  @StarlarkMethod(
+      name = "subtract_linking_contexts",
+      documented = false,
+      parameters = {
+        @Param(name = "ctx", positional = false, named = true),
+        @Param(name = "linking_contexts", positional = false, defaultValue = "[]", named = true),
+        @Param(
+            name = "avoid_dep_linking_contexts",
+            positional = false,
+            defaultValue = "[]",
+            named = true),
+      })
+  public CcLinkingContext subtractLinkingContexts(
+      StarlarkRuleContext starlarkRuleContext,
+      Sequence<?> linkingContexts,
+      Sequence<?> avoidDepLinkingContexts)
+      throws InterruptedException, EvalException {
+    return MultiArchBinarySupport.ccLinkingContextSubtractSubtrees(
+        starlarkRuleContext.getRuleContext(),
+        Sequence.cast(linkingContexts, CcLinkingContext.class, "linking_contexts"),
+        Sequence.cast(
+            avoidDepLinkingContexts, CcLinkingContext.class, "avoid_dep_linking_contexts"));
   }
 }

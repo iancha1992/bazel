@@ -65,6 +65,7 @@ public enum ProfilerTask {
   CRITICAL_PATH_COMPONENT("critical path component"),
   HANDLE_GC_NOTIFICATION("gc notification"),
   ACTION_COUNTS("action count"),
+  ACTION_CACHE_COUNTS("action cache count"),
   LOCAL_CPU_USAGE("CPU usage (Bazel)"),
   SYSTEM_CPU_USAGE("CPU usage (total)"),
   CPU_USAGE_ESTIMATION("CPU usage estimation"),
@@ -82,7 +83,7 @@ public enum ProfilerTask {
   STARLARK_REPOSITORY_FN("Starlark repository function call", Threshold.FIFTY_MILLIS),
   ACTION_FS_STAGING("Staging per-action file system"),
   REMOTE_CACHE_CHECK("remote action cache check"),
-  REMOTE_DOWNLOAD("remote output download"),
+  REMOTE_DOWNLOAD("remote output download", Threshold.TEN_MILLIS),
   REMOTE_NETWORK("remote network"),
   FILESYSTEM_TRAVERSAL("filesystem traversal"),
   WORKER_EXECUTION("local execution in worker"),
@@ -91,6 +92,9 @@ public enum ProfilerTask {
   WORKER_WORKING("waiting for response from worker"),
   WORKER_COPYING_OUTPUTS("copying outputs from worker"),
   CREDENTIAL_HELPER("calling credential helper"),
+  PRESSURE_STALL_IO("I/O pressure stall level"),
+  PRESSURE_STALL_MEMORY("Memory pressure stall level"),
+  DYNAMIC_LOCK("Acquiring dynamic execution output lock", Threshold.FIFTY_MILLIS),
   UNKNOWN("Unknown event");
 
   private static class Threshold {

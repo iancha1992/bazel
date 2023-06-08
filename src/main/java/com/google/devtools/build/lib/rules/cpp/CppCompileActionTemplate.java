@@ -55,7 +55,7 @@ public final class CppCompileActionTemplate extends ActionKeyCacher
   private final NestedSet<Artifact> allInputs;
 
   /**
-   * Creates an CppCompileActionTemplate.
+   * Creates a CppCompileActionTemplate.
    *
    * @param sourceTreeArtifact the TreeArtifact that contains source files to compile.
    * @param outputTreeArtifact the TreeArtifact that contains compilation outputs.
@@ -89,7 +89,7 @@ public final class CppCompileActionTemplate extends ActionKeyCacher
     this.mandatoryInputs = cppCompileActionBuilder.buildMandatoryInputs();
     this.allInputs =
         NestedSetBuilder.fromNestedSet(mandatoryInputs)
-            .addTransitive(cppCompileActionBuilder.buildInputsForInvalidation())
+            .addTransitive(cppCompileActionBuilder.getInputsForInvalidation())
             .build();
   }
 
@@ -170,24 +170,23 @@ public final class CppCompileActionTemplate extends ActionKeyCacher
             cppCompileActionBuilder.getCoptsFilter(),
             CppActionNames.CPP_COMPILE,
             dotdTreeArtifact,
-            diagnosticsTreeArtifact,
             cppCompileActionBuilder.getFeatureConfiguration(),
             cppCompileActionBuilder.getVariables());
     CppCompileAction.computeKey(
         actionKeyContext,
         fp,
-        cppCompileActionBuilder.getActionClassId(),
         cppCompileActionBuilder.getActionEnvironment(),
         commandLine.getEnvironment(),
         cppCompileActionBuilder.getExecutionInfo(),
         CppCompileAction.computeCommandLineKey(
-            commandLine.getCompilerOptions(/*overwrittenVariables=*/ null)),
+            commandLine.getCompilerOptions(/* overwrittenVariables= */ null)),
         cppCompileActionBuilder.getCcCompilationContext().getDeclaredIncludeSrcs(),
-        cppCompileActionBuilder.buildMandatoryInputs(),
+        mandatoryInputs,
+        mandatoryInputs,
         cppCompileActionBuilder.getPrunableHeaders(),
         cppCompileActionBuilder.getCcCompilationContext().getLooseHdrsDirs(),
         cppCompileActionBuilder.getBuiltinIncludeDirectories(),
-        cppCompileActionBuilder.buildInputsForInvalidation(),
+        cppCompileActionBuilder.getInputsForInvalidation(),
         toolchain
             .getCppConfigurationEvenThoughItCanBeDifferentThanWhatTargetHas()
             .validateTopLevelHeaderInclusions());
@@ -308,6 +307,11 @@ public final class CppCompileActionTemplate extends ActionKeyCacher
         .add(sourceTreeArtifact)
         .addTransitive(allInputs)
         .build();
+  }
+
+  @Override
+  public NestedSet<Artifact> getSchedulingDependencies() {
+    return NestedSetBuilder.emptySet(Order.STABLE_ORDER);
   }
 
   @Override

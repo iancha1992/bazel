@@ -53,7 +53,6 @@ import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
 import com.google.devtools.build.lib.query2.engine.QueryExpressionContext;
 import com.google.devtools.build.lib.query2.engine.QueryUtil.MinDepthUniquifierImpl;
-import com.google.devtools.build.lib.query2.engine.QueryUtil.MutableKeyExtractorBackedMapImpl;
 import com.google.devtools.build.lib.query2.engine.QueryUtil.UniquifierImpl;
 import com.google.devtools.build.lib.query2.engine.ThreadSafeOutputFormatterCallback;
 import com.google.devtools.build.lib.query2.engine.Uniquifier;
@@ -187,8 +186,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
   @Override
   public Target getTarget(Label label) throws TargetNotFoundException, InterruptedException {
     try {
-      return ((PackageValue)
-              walkableGraphSupplier.get().getValue(PackageValue.key(label.getPackageIdentifier())))
+      return ((PackageValue) walkableGraphSupplier.get().getValue(label.getPackageIdentifier()))
           .getPackage()
           .getTarget(label.getName());
     } catch (NoSuchTargetException e) {
@@ -219,7 +217,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
   }
 
   private boolean isAliasConfiguredTarget(ConfiguredTargetKey key) throws InterruptedException {
-    return AliasProvider.isAlias(getConfiguredTargetValue(key).getConfiguredTarget());
+    return AliasProvider.isAlias(getConfiguredTargetValue(key.toKey()).getConfiguredTarget());
   }
 
   public InterruptibleSupplier<ImmutableSet<PathFragment>>
@@ -249,7 +247,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
   public ThreadSafeMutableSet<T> getFwdDeps(Iterable<T> targets) throws InterruptedException {
     Map<SkyKey, T> targetsByKey = Maps.newHashMapWithExpectedSize(Iterables.size(targets));
     for (T target : targets) {
-      targetsByKey.put(getSkyKey(target), target);
+      targetsByKey.put(getConfiguredTargetKey(target).toKey(), target);
     }
     Map<SkyKey, ImmutableList<ClassifiedDependency<T>>> directDeps =
         targetifyValues(targetsByKey, graph.getDirectDeps(targetsByKey.keySet()));
@@ -286,7 +284,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
       throws InterruptedException {
     Map<SkyKey, T> targetsByKey = Maps.newHashMapWithExpectedSize(Iterables.size(targets));
     for (T target : targets) {
-      targetsByKey.put(getSkyKey(target), target);
+      targetsByKey.put(getConfiguredTargetKey(target).toKey(), target);
     }
     Map<SkyKey, ImmutableList<ClassifiedDependency<T>>> reverseDepsByKey =
         targetifyValues(targetsByKey, graph.getReverseDeps(targetsByKey.keySet()));
@@ -501,7 +499,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
   @Nullable
   protected abstract BuildConfigurationValue getConfiguration(T target);
 
-  protected abstract ConfiguredTargetKey getSkyKey(T target);
+  protected abstract ConfiguredTargetKey getConfiguredTargetKey(T target);
 
   @Override
   public ThreadSafeMutableSet<T> getTransitiveClosure(
@@ -528,11 +526,6 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
   }
 
   @Override
-  public <V> MutableMap<T, V> createMutableMap() {
-    return new MutableKeyExtractorBackedMapImpl<>(getConfiguredTargetKeyExtractor());
-  }
-
-  @Override
   public Uniquifier<T> createUniquifier() {
     return new UniquifierImpl<>(getConfiguredTargetKeyExtractor());
   }
@@ -548,13 +541,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
   protected void preloadOrThrow(QueryExpression caller, Collection<String> patterns) {}
 
   @Override
-  public ThreadSafeMutableSet<T> getBuildFiles(
-      QueryExpression caller,
-      ThreadSafeMutableSet<T> nodes,
-      boolean buildFiles,
-      boolean loads,
-      QueryExpressionContext<T> context)
-      throws QueryException {
+  public TransitiveLoadFilesHelper<T> getTransitiveLoadFilesHelper() throws QueryException {
     throw new QueryException(
         "buildfiles() doesn't make sense for the configured target graph",
         ConfigurableQuery.Code.BUILDFILES_FUNCTION_NOT_SUPPORTED);

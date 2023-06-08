@@ -149,6 +149,7 @@ public abstract class AndroidStarlarkData
       AndroidManifestInfo manifest,
       Sequence<?> resources, // <ConfiguredTarget>
       Sequence<?> deps, // <AndroidResourcesInfo>
+      Sequence<?> resApkDeps, // <File>
       boolean neverlink,
       boolean enableDataBinding)
       throws EvalException, InterruptedException {
@@ -161,6 +162,7 @@ public abstract class AndroidStarlarkData
           .process(
               ctx,
               manifest.asStampedManifest(),
+              Sequence.cast(resApkDeps, Artifact.class, "resource_apks"),
               ResourceDependencies.fromProviders(
                   Sequence.cast(deps, AndroidResourcesInfo.class, "deps"), neverlink),
               DataBinding.contextFrom(
@@ -180,7 +182,8 @@ public abstract class AndroidStarlarkData
       boolean enableDataBinding)
       throws EvalException, InterruptedException {
     ValidatedAndroidResources validated =
-        mergeRes(ctx, manifest, resources, deps, neverlink, enableDataBinding);
+        mergeRes(
+            ctx, manifest, resources, deps, StarlarkList.empty(), neverlink, enableDataBinding);
     JavaInfo javaInfo =
         getJavaInfoForRClassJar(validated.getClassJar(), validated.getJavaSourceJar());
     return Dict.<Provider, NativeInfo>builder()
@@ -258,9 +261,10 @@ public abstract class AndroidStarlarkData
             .process(
                 ctx,
                 AndroidManifest.forAarImport(androidManifestArtifact),
+                ImmutableList.of(),
                 ResourceDependencies.fromProviders(
                     getProviders(depsTargets, AndroidResourcesInfo.PROVIDER),
-                    /* neverlink = */ false),
+                    /* neverlink= */ false),
                 DataBinding.getDisabledDataBindingContext(ctx));
 
     MergedAndroidAssets mergedAssets =
@@ -568,22 +572,17 @@ public abstract class AndroidStarlarkData
   private static JavaInfo getJavaInfoForRClassJar(Artifact rClassJar, Artifact rClassSrcJar) {
     return JavaInfo.Builder.create()
         .setNeverlink(true)
-        .addProvider(
-            JavaSourceJarsProvider.class,
-            JavaSourceJarsProvider.builder().addSourceJar(rClassSrcJar).build())
-        .addProvider(
-            JavaRuleOutputJarsProvider.class,
+        .javaSourceJars(JavaSourceJarsProvider.builder().addSourceJar(rClassSrcJar).build())
+        .javaRuleOutputs(
             JavaRuleOutputJarsProvider.builder()
                 .addJavaOutput(
                     JavaOutput.builder().setClassJar(rClassJar).addSourceJar(rClassSrcJar).build())
                 .build())
-        .addProvider(
-            JavaCompilationArgsProvider.class,
+        .javaCompilationArgs(
             JavaCompilationArgsProvider.builder()
                 .addDirectCompileTimeJar(rClassJar, rClassJar)
                 .build())
-        .addProvider(
-            JavaCompilationInfoProvider.class,
+        .javaCompilationInfo(
             new JavaCompilationInfoProvider.Builder()
                 .setCompilationClasspath(NestedSetBuilder.create(Order.NAIVE_LINK_ORDER, rClassJar))
                 .build())

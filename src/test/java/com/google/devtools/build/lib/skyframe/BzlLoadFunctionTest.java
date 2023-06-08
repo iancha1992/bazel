@@ -22,18 +22,21 @@ import static org.junit.Assert.fail;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
+import com.google.devtools.build.lib.bazel.bzlmod.BazelLockFileFunction;
 import com.google.devtools.build.lib.bazel.bzlmod.BazelModuleResolutionFunction;
 import com.google.devtools.build.lib.bazel.bzlmod.FakeRegistry;
 import com.google.devtools.build.lib.bazel.bzlmod.ModuleFileFunction;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.BazelCompatibilityMode;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.CheckDirectDepsMode;
+import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.LockfileMode;
 import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.cmdline.BazelModuleContext;
 import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.packages.ConstantRuleVisibility;
+import com.google.devtools.build.lib.packages.RuleVisibility;
 import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.pkgcache.PackageOptions;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
+import com.google.devtools.build.lib.runtime.QuiescingExecutorsImpl;
 import com.google.devtools.build.lib.skyframe.BzlLoadFunction.BzlLoadFailedException;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue.Injected;
 import com.google.devtools.build.lib.skyframe.util.SkyframeExecutorTestUtils;
@@ -75,7 +78,7 @@ public class BzlLoadFunctionTest extends BuildViewTestCase {
   public final void preparePackageLoading() throws Exception {
     Path alternativeRoot = scratch.dir("/root_2");
     PackageOptions packageOptions = Options.getDefaults(PackageOptions.class);
-    packageOptions.defaultVisibility = ConstantRuleVisibility.PUBLIC;
+    packageOptions.defaultVisibility = RuleVisibility.PUBLIC;
     packageOptions.showLoadingProgress = true;
     packageOptions.globbingThreads = 7;
     getSkyframeExecutor()
@@ -88,6 +91,7 @@ public class BzlLoadFunctionTest extends BuildViewTestCase {
             Options.getDefaults(BuildLanguageOptions.class),
             UUID.randomUUID(),
             ImmutableMap.of(),
+            QuiescingExecutorsImpl.forTesting(),
             new TimestampGranularityMonitor(BlazeClock.instance()));
     skyframeExecutor.setActionEnv(ImmutableMap.of());
   }
@@ -110,7 +114,8 @@ public class BzlLoadFunctionTest extends BuildViewTestCase {
         PrecomputedValue.injected(
             BazelModuleResolutionFunction.CHECK_DIRECT_DEPENDENCIES, CheckDirectDepsMode.WARNING),
         PrecomputedValue.injected(
-            BazelModuleResolutionFunction.BAZEL_COMPATIBILITY_MODE, BazelCompatibilityMode.ERROR));
+            BazelModuleResolutionFunction.BAZEL_COMPATIBILITY_MODE, BazelCompatibilityMode.ERROR),
+        PrecomputedValue.injected(BazelLockFileFunction.LOCKFILE_MODE, LockfileMode.OFF));
   }
 
   @Before
@@ -205,6 +210,156 @@ public class BzlLoadFunctionTest extends BuildViewTestCase {
     checkSuccessfulLookup("//pkg:subdir/ext2.bzl");
   }
 
+  @Test
+  public void testLoadBadExtension_sclDisabled() throws Exception {
+    setBuildLanguageOptions("--experimental_enable_scl_dialect=false");
+
+    scratch.file("pkg/BUILD");
+    scratch.file("pkg/ext.bzl", "load(':foo.garbage', 'a')");
+    reporter.removeHandler(failFastHandler);
+    checkFailingLookup("//pkg:ext.bzl", "has invalid load statements");
+    assertContainsEvent("The label must reference a file with extension \".bzl\"");
+    assertDoesNotContainEvent(".scl");
+  }
+
+  @Test
+  public void testLoadBadExtension_sclEnabled() throws Exception {
+    setBuildLanguageOptions("--experimental_enable_scl_dialect=true");
+
+    scratch.file("pkg/BUILD");
+    scratch.file("pkg/ext.bzl", "load(':foo.garbage', 'a')");
+    reporter.removeHandler(failFastHandler);
+    checkFailingLookup("//pkg:ext.bzl", "has invalid load statements");
+    assertContainsEvent("The label must reference a file with extension \".bzl\" or \".scl\"");
+  }
+
+  @Test
+  public void testLoadingSclRequiresExperimentalFlag() throws Exception {
+    setBuildLanguageOptions("--experimental_enable_scl_dialect=false");
+
+    scratch.file("pkg/BUILD");
+    scratch.file("pkg/ext.scl");
+    reporter.removeHandler(failFastHandler);
+    checkFailingLookup(
+        "//pkg:ext.scl", "loading .scl files requires setting --experimental_enable_scl_dialect");
+  }
+
+  @Test
+  public void testCanLoadScl() throws Exception {
+    setBuildLanguageOptions("--experimental_enable_scl_dialect=true");
+
+    scratch.file("pkg/BUILD");
+    scratch.file("pkg/ext.scl");
+    checkSuccessfulLookup("//pkg:ext.scl");
+  }
+
+  @Test
+  public void testCanLoadSclFromBzlAndScl() throws Exception {
+    setBuildLanguageOptions("--experimental_enable_scl_dialect=true");
+
+    scratch.file("pkg/BUILD");
+    scratch.file("pkg/ext1.scl", "a = 1");
+    // Can use relative load label syntax from ext2a.bzl, but not from ext2b.scl.
+    scratch.file("pkg/ext2a.bzl", "load(':ext1.scl', 'a')");
+    scratch.file("pkg/ext2b.scl", "load('//pkg:ext1.scl', 'a')");
+
+    checkSuccessfulLookup("//pkg:ext2a.bzl");
+    checkSuccessfulLookup("//pkg:ext2b.scl");
+  }
+
+  @Test
+  public void testSclCannotLoadNonSclFiles() throws Exception {
+    setBuildLanguageOptions("--experimental_enable_scl_dialect=true");
+
+    scratch.file("pkg/BUILD");
+    scratch.file("pkg/ext1a.bzl", "a = 1");
+    scratch.file("pkg/ext1a.garbage", "a = 1");
+    // Cannot use relative label.
+    scratch.file("pkg/ext2a.scl", "load('//pkg:ext1a.bzl', 'a')");
+    scratch.file("pkg/ext2b.scl", "load('//pkg:ext1b.garbage', 'a')");
+
+    reporter.removeHandler(failFastHandler);
+    checkFailingLookup("//pkg:ext2a.scl", "has invalid load statements");
+    assertContainsEvent(
+        "The label must reference a file with extension \".scl\" (.scl files cannot load .bzl"
+            + " files)");
+    eventCollector.clear();
+    checkFailingLookup("//pkg:ext2b.scl", "has invalid load statements");
+    assertContainsEvent("The label must reference a file with extension \".scl\"");
+    assertDoesNotContainEvent(".bzl");
+  }
+
+  @Test
+  public void testSclCanOnlyLoadLabelsRelativeToDefaultRepoRoot() throws Exception {
+    setBuildLanguageOptions("--experimental_enable_scl_dialect=true");
+
+    scratch.file("pkg/BUILD");
+    scratch.file("pkg/ext1.scl", "load(':foo.scl', 'a')");
+    scratch.file("pkg/ext2.scl", "load('@repo//:foo.scl', 'a')");
+
+    reporter.removeHandler(failFastHandler);
+    checkFailingLookup("//pkg:ext1.scl", "has invalid load statements");
+    assertContainsEvent("in .scl files, load labels must begin with \"//\"");
+    eventCollector.clear();
+    checkFailingLookup("//pkg:ext2.scl", "has invalid load statements");
+    assertContainsEvent("in .scl files, load labels must begin with \"//\"");
+  }
+
+  @Test
+  public void testSclSupportsStructAndVisibility() throws Exception {
+    setBuildLanguageOptions("--experimental_enable_scl_dialect=true");
+
+    scratch.file("pkg/BUILD");
+    scratch.file(
+        "pkg/ext1.scl", //
+        "visibility('private')",
+        "a = struct()");
+    scratch.file(
+        "pkg/ext2.scl", //
+        "load('//pkg:ext1.scl', 'a')");
+    scratch.file("pkg2/BUILD");
+    scratch.file(
+        "pkg2/ext3.scl", //
+        "load('//pkg:ext1.scl', 'a')");
+
+    checkSuccessfulLookup("//pkg:ext2.scl");
+    reporter.removeHandler(failFastHandler);
+    checkFailingLookup(
+        "//pkg2:ext3.scl", "module //pkg2:ext3.scl contains .bzl load visibility violations");
+  }
+
+  @Test
+  public void testSclDoesNotSupportOtherBazelSymbols() throws Exception {
+    setBuildLanguageOptions("--experimental_enable_scl_dialect=true");
+
+    scratch.file("pkg/BUILD");
+    scratch.file(
+        "pkg/ext.scl", //
+        "a = depset([])");
+
+    reporter.removeHandler(failFastHandler);
+    checkFailingLookup("//pkg:ext.scl", "compilation of module 'pkg/ext.scl' failed");
+    assertContainsEvent("name 'depset' is not defined");
+  }
+
+  @Test
+  public void testSclDisallowsNonAsciiStringLiterals() throws Exception {
+    setBuildLanguageOptions("--experimental_enable_scl_dialect=true");
+
+    scratch.file("pkg/BUILD");
+    scratch.file(
+        "pkg/ext1.bzl", //
+        "'x\377z'"); // xÿz
+    scratch.file(
+        "pkg/ext2.scl", //
+        "'x\377z'");
+
+    checkSuccessfulLookup("//pkg:ext1.bzl");
+    reporter.removeHandler(failFastHandler);
+    checkFailingLookup("//pkg:ext2.scl", "compilation of module 'pkg/ext2.scl' failed");
+    assertContainsEvent("string literal contains non-ASCII character");
+  }
+
   private EvaluationResult<BzlLoadValue> get(SkyKey skyKey) throws Exception {
     EvaluationResult<BzlLoadValue> result =
         SkyframeExecutorTestUtils.evaluate(
@@ -216,7 +371,7 @@ public class BzlLoadFunctionTest extends BuildViewTestCase {
   }
 
   private static SkyKey key(String label) {
-    return BzlLoadValue.keyForBuild(Label.parseAbsoluteUnchecked(label));
+    return BzlLoadValue.keyForBuild(Label.parseCanonicalUnchecked(label));
   }
 
   /** Loads a .bzl with the given label and asserts success. */
@@ -314,7 +469,7 @@ public class BzlLoadFunctionTest extends BuildViewTestCase {
 
     SkyKey skyKey =
         BzlLoadValue.keyForWorkspace(
-            Label.parseAbsoluteUnchecked("@a_remote_repo//remote_pkg:ext.bzl"),
+            Label.parseCanonicalUnchecked("@a_remote_repo//remote_pkg:ext.bzl"),
             /* inWorkspace= */
             /* workspaceChunk= */ 0,
             rootedPath);
@@ -927,7 +1082,7 @@ public class BzlLoadFunctionTest extends BuildViewTestCase {
     RootedPath rootedPath = RootedPath.toRootedPath(root, PathFragment.create("WORKSPACE"));
 
     SkyKey skyKey =
-        BzlLoadValue.keyForWorkspace(Label.parseAbsoluteUnchecked("@a//:a.bzl"), 1, rootedPath);
+        BzlLoadValue.keyForWorkspace(Label.parseCanonicalUnchecked("@a//:a.bzl"), 1, rootedPath);
 
     EvaluationResult<BzlLoadValue> result =
         SkyframeExecutorTestUtils.evaluate(
@@ -939,7 +1094,7 @@ public class BzlLoadFunctionTest extends BuildViewTestCase {
 
   @Test
   public void testLoadBzlFileFromBzlmod() throws Exception {
-    setBuildLanguageOptions("--enable_bzlmod");
+    setBuildLanguageOptions("--enable_bzlmod", "--experimental_enable_scl_dialect");
     scratch.overwriteFile("MODULE.bazel", "bazel_dep(name='foo',version='1.0')");
     registry
         .addModule(
@@ -952,12 +1107,13 @@ public class BzlLoadFunctionTest extends BuildViewTestCase {
     scratch.file(fooDir.getRelative("BUILD").getPathString());
     scratch.file(
         fooDir.getRelative("test.bzl").getPathString(),
-        "load('@bar_alias//:test.bzl', 'haha')",
+        // Also test that bzlmod .bzl files can load .scl files.
+        "load('@bar_alias//:test.scl', 'haha')",
         "hoho = haha");
     Path barDir = moduleRoot.getRelative("bar~2.0");
     scratch.file(barDir.getRelative("WORKSPACE").getPathString());
     scratch.file(barDir.getRelative("BUILD").getPathString());
-    scratch.file(barDir.getRelative("test.bzl").getPathString(), "haha = 5");
+    scratch.file(barDir.getRelative("test.scl").getPathString(), "haha = 5");
 
     SkyKey skyKey = BzlLoadValue.keyForBzlmod(Label.parseCanonical("@@foo~1.0//:test.bzl"));
     EvaluationResult<BzlLoadValue> result =

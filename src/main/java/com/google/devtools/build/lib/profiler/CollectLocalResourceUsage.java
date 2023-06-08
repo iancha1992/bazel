@@ -18,11 +18,13 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.ResourceEstimator;
 import com.google.devtools.build.lib.bugreport.BugReporter;
 import com.google.devtools.build.lib.profiler.NetworkMetricsCollector.SystemNetworkUsages;
 import com.google.devtools.build.lib.unix.ProcMeminfoParser;
 import com.google.devtools.build.lib.util.OS;
+import com.google.devtools.build.lib.util.ResourceUsage;
 import com.google.devtools.build.lib.worker.WorkerMetric;
 import com.google.devtools.build.lib.worker.WorkerMetricsCollector;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
@@ -64,6 +66,7 @@ public class CollectLocalResourceUsage extends Thread {
   private final WorkerMetricsCollector workerMetricsCollector;
 
   private final ResourceEstimator resourceEstimator;
+  private final boolean collectPressureStallIndicators;
 
   CollectLocalResourceUsage(
       BugReporter bugReporter,
@@ -72,7 +75,9 @@ public class CollectLocalResourceUsage extends Thread {
       boolean collectWorkerDataInProfiler,
       boolean collectLoadAverage,
       boolean collectSystemNetworkUsage,
-      boolean collectResourceManagerEstimation) {
+      boolean collectResourceManagerEstimation,
+      boolean collectPressureStallIndicators) {
+    super("collect-local-resources");
     this.bugReporter = checkNotNull(bugReporter);
     this.collectWorkerDataInProfiler = collectWorkerDataInProfiler;
     this.workerMetricsCollector = workerMetricsCollector;
@@ -80,6 +85,7 @@ public class CollectLocalResourceUsage extends Thread {
     this.collectSystemNetworkUsage = collectSystemNetworkUsage;
     this.collectResourceManagerEstimation = collectResourceManagerEstimation;
     this.resourceEstimator = resourceEstimator;
+    this.collectPressureStallIndicators = collectPressureStallIndicators;
   }
 
   @Override
@@ -111,6 +117,10 @@ public class CollectLocalResourceUsage extends Thread {
         enabledCounters.add(ProfilerTask.MEMORY_USAGE_ESTIMATION);
         enabledCounters.add(ProfilerTask.CPU_USAGE_ESTIMATION);
       }
+      if (collectPressureStallIndicators) {
+        enabledCounters.add(ProfilerTask.PRESSURE_STALL_IO);
+        enabledCounters.add(ProfilerTask.PRESSURE_STALL_MEMORY);
+      }
 
       for (ProfilerTask counter : enabledCounters) {
         timeSeries.put(counter, new TimeSeries(startTime, BUCKET_DURATION));
@@ -132,6 +142,12 @@ public class CollectLocalResourceUsage extends Thread {
       long nextCpuTimeNanos = osBean.getProcessCpuTime();
 
       double systemCpuLoad = osBean.getSystemCpuLoad();
+      if (Double.isNaN(systemCpuLoad)) {
+        // Unlike advertised, on Mac the system CPU load is NaN sometimes.
+        // There is no good way to handle this, so to avoid any downstream method crashing on this,
+        // we reset the CPU value here.
+        systemCpuLoad = 0;
+      }
       double systemUsage = systemCpuLoad * numProcessors;
 
       long systemMemoryUsageMb = -1;
@@ -167,17 +183,25 @@ public class CollectLocalResourceUsage extends Thread {
 
       int workerMemoryUsageMb = 0;
       if (collectWorkerDataInProfiler) {
-        workerMemoryUsageMb =
-            this.workerMetricsCollector.collectMetrics().stream()
-                    .map(WorkerMetric::getWorkerStat)
-                    .filter(Objects::nonNull)
-                    .mapToInt(WorkerMetric.WorkerStat::getUsedMemoryInKB)
-                    .sum()
-                / 1024;
+        try (SilentCloseable c = Profiler.instance().profile("Worker metrics collection")) {
+          workerMemoryUsageMb =
+              this.workerMetricsCollector.collectMetrics().stream()
+                      .map(WorkerMetric::getWorkerStat)
+                      .filter(Objects::nonNull)
+                      .mapToInt(WorkerMetric.WorkerStat::getUsedMemoryInKB)
+                      .sum()
+                  / 1024;
+        }
       }
       double loadAverage = 0;
       if (collectLoadAverage) {
         loadAverage = osBean.getSystemLoadAverage();
+      }
+      double pressureStallIo = 0;
+      double pressureStallMemory = 0;
+      if (collectPressureStallIndicators) {
+        pressureStallIo = ResourceUsage.readPressureStallIndicator("io");
+        pressureStallMemory = ResourceUsage.readPressureStallIndicator("memory");
       }
 
       double deltaNanos = nextElapsed.minus(previousElapsed).toNanos();
@@ -212,6 +236,16 @@ public class CollectLocalResourceUsage extends Thread {
             ProfilerTask.WORKERS_MEMORY_USAGE, previousElapsed, nextElapsed, workerMemoryUsageMb);
         if (loadAverage > 0) {
           addRange(ProfilerTask.SYSTEM_LOAD_AVERAGE, previousElapsed, nextElapsed, loadAverage);
+        }
+        if (pressureStallIo >= 0) {
+          addRange(ProfilerTask.PRESSURE_STALL_IO, previousElapsed, nextElapsed, pressureStallIo);
+        }
+        if (pressureStallMemory >= 0) {
+          addRange(
+              ProfilerTask.PRESSURE_STALL_MEMORY,
+              previousElapsed,
+              nextElapsed,
+              pressureStallMemory);
         }
         if (systemNetworkUsages != null) {
           addRange(
@@ -259,7 +293,9 @@ public class CollectLocalResourceUsage extends Thread {
 
     for (ProfilerTask task : timeSeries.keySet()) {
       profiler.logCounters(
-          task, timeSeries.get(task).toDoubleArray(len), profileStart, BUCKET_DURATION);
+          ImmutableMap.ofEntries(Map.entry(task, timeSeries.get(task).toDoubleArray(len))),
+          profileStart,
+          BUCKET_DURATION);
     }
     timeSeries = null;
   }

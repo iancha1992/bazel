@@ -3,6 +3,7 @@ load("@rules_java//java:defs.bzl", "java_library", "java_test")
 # Description:
 #   Skyframe tests.
 package(
+    default_applicable_licenses = ["//:license"],
     default_testonly = 1,
     default_visibility = ["//src:__subpackages__"],
 )
@@ -54,9 +55,11 @@ java_library(
     deps = [
         ":testutil",
         "//src/main/java/com/google/devtools/build/lib/bugreport",
+        "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/lib/collect/nestedset",
         "//src/main/java/com/google/devtools/build/lib/concurrent",
         "//src/main/java/com/google/devtools/build/lib/events",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:package_value",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/autocodec",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/testutils",
         "//src/main/java/com/google/devtools/build/lib/util",
@@ -70,6 +73,7 @@ java_library(
         "//src/test/java/com/google/devtools/build/lib/testutil:TestThread",
         "//src/test/java/com/google/devtools/build/lib/testutil:TestUtils",
         "//third_party:auto_value",
+        "//third_party:caffeine",
         "//third_party:guava",
         "//third_party:guava-testlib",
         "//third_party:jsr305",
@@ -83,7 +87,9 @@ java_library(
 java_test(
     name = "SkyframeTests",
     size = "medium",
+    jvm_flags = ["-DBAZEL_USE_POOLED_LABEL_INTERNER=1"],
     shard_count = 2,
+    tags = ["not_run:arm"],
     test_class = "com.google.devtools.build.skyframe.AllTests",
     runtime_deps = [":skyframe_tests"],
 )

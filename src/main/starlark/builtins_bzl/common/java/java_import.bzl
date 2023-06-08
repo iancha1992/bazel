@@ -18,12 +18,11 @@ Definition of java_import rule.
 
 load(":common/java/java_common.bzl", "construct_defaultinfo")
 load(":common/java/java_semantics.bzl", "semantics")
-load(":common/java/proguard_validation.bzl", "VALIDATE_PROGUARD_SPECS_IMPLICIT_ATTRS", "validate_proguard_specs")
-load(":common/rule_util.bzl", "merge_attrs")
+load(":common/java/proguard_validation.bzl", "validate_proguard_specs")
 load(":common/java/import_deps_check.bzl", "import_deps_check")
+load(":common/cc/cc_info.bzl", "CcInfo")
 
 JavaInfo = _builtins.toplevel.JavaInfo
-CcInfo = _builtins.toplevel.CcInfo
 java_common = _builtins.toplevel.java_common
 
 def _filter_provider(provider, *attrs):
@@ -33,7 +32,7 @@ def _collect_jars(ctx, jars):
     jars_dict = {}
     for info in jars:
         if JavaInfo in info:
-            fail("//" + ctx.label.package + ":" + ctx.attr.name + ": should not refer to Java rules")
+            fail("'jars' attribute cannot contain labels of Java targets")
         for jar in info.files.to_list():
             jar_path = jar.dirname + jar.basename
             if jars_dict.get(jar_path) != None:
@@ -47,12 +46,13 @@ def _process_with_ijars_if_needed(jars, ctx):
     for jar in jars:
         interface_jar = jar
         if use_ijars:
-            ijar_basename = jar.short_path.removesuffix("." + jar.extension) + "-ijar.jar"
+            ijar_basename = jar.short_path.removeprefix("../").removesuffix("." + jar.extension) + "-ijar.jar"
             interface_jar_directory = "_ijar/" + ctx.label.name + "/" + ijar_basename
 
             interface_jar = ctx.actions.declare_file(interface_jar_directory)
             java_common.run_ijar(
                 ctx.actions,
+                target_label = ctx.label,
                 jar = jar,
                 output = interface_jar,
                 java_toolchain = semantics.find_java_toolchain(ctx),
@@ -213,49 +213,46 @@ _ALLOWED_RULES_IN_DEPS_FOR_JAVA_IMPORT = [
     "cc_binary",
 ]
 
-JAVA_IMPORT_ATTRS = merge_attrs(
-    VALIDATE_PROGUARD_SPECS_IMPLICIT_ATTRS,
-    {
-        "data": attr.label_list(
-            allow_files = True,
-            flags = ["SKIP_CONSTRAINTS_OVERRIDE"],
-        ),
-        "deps": attr.label_list(
-            providers = [JavaInfo],
-            allow_rules = _ALLOWED_RULES_IN_DEPS_FOR_JAVA_IMPORT,
-        ),
-        "exports": attr.label_list(
-            providers = [JavaInfo],
-            allow_rules = _ALLOWED_RULES_IN_DEPS_FOR_JAVA_IMPORT,
-        ),
-        "runtime_deps": attr.label_list(
-            allow_files = [".jar"],
-            allow_rules = _ALLOWED_RULES_IN_DEPS_FOR_JAVA_IMPORT,
-            providers = [[CcInfo], [JavaInfo]],
-            flags = ["SKIP_ANALYSIS_TIME_FILETYPE_CHECK"],
-        ),
-        # JavaImportBazeRule attr
-        "jars": attr.label_list(
-            allow_files = [".jar"],
-            mandatory = True,
-        ),
-        "srcjar": attr.label(
-            allow_single_file = [".srcjar", ".jar"],
-            flags = ["DIRECT_COMPILE_TIME_INPUT"],
-        ),
-        "neverlink": attr.bool(
-            default = False,
-        ),
-        "constraints": attr.string_list(),
-        # ProguardLibraryRule attr
-        "proguard_specs": attr.label_list(
-            allow_files = True,
-        ),
-        # Additional attrs
-        "licenses": attr.license() if hasattr(attr, "license") else attr.string_list(),
-        "_java_toolchain_type": attr.label(default = semantics.JAVA_TOOLCHAIN_TYPE),
-    },
-)
+JAVA_IMPORT_ATTRS = {
+    "data": attr.label_list(
+        allow_files = True,
+        flags = ["SKIP_CONSTRAINTS_OVERRIDE"],
+    ),
+    "deps": attr.label_list(
+        providers = [JavaInfo],
+        allow_rules = _ALLOWED_RULES_IN_DEPS_FOR_JAVA_IMPORT,
+    ),
+    "exports": attr.label_list(
+        providers = [JavaInfo],
+        allow_rules = _ALLOWED_RULES_IN_DEPS_FOR_JAVA_IMPORT,
+    ),
+    "runtime_deps": attr.label_list(
+        allow_files = [".jar"],
+        allow_rules = _ALLOWED_RULES_IN_DEPS_FOR_JAVA_IMPORT,
+        providers = [[CcInfo], [JavaInfo]],
+        flags = ["SKIP_ANALYSIS_TIME_FILETYPE_CHECK"],
+    ),
+    # JavaImportBazeRule attr
+    "jars": attr.label_list(
+        allow_files = [".jar"],
+        mandatory = True,
+    ),
+    "srcjar": attr.label(
+        allow_single_file = [".srcjar", ".jar"],
+        flags = ["DIRECT_COMPILE_TIME_INPUT"],
+    ),
+    "neverlink": attr.bool(
+        default = False,
+    ),
+    "constraints": attr.string_list(),
+    # ProguardLibraryRule attr
+    "proguard_specs": attr.label_list(
+        allow_files = True,
+    ),
+    # Additional attrs
+    "licenses": attr.license() if hasattr(attr, "license") else attr.string_list(),
+    "_java_toolchain_type": attr.label(default = semantics.JAVA_TOOLCHAIN_TYPE),
+}
 
 java_import = rule(
     _proxy,

@@ -15,6 +15,7 @@ package com.google.devtools.build.lib.buildtool;
 
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.CommandLineExpansionException;
+import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
 import com.google.devtools.build.lib.analysis.actions.TemplateExpansionException;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
 import com.google.devtools.build.lib.events.Event;
@@ -24,7 +25,6 @@ import com.google.devtools.build.lib.query2.aquery.ActionGraphProtoOutputFormatt
 import com.google.devtools.build.lib.query2.aquery.ActionGraphQueryEnvironment;
 import com.google.devtools.build.lib.query2.aquery.AqueryActionFilter;
 import com.google.devtools.build.lib.query2.aquery.AqueryOptions;
-import com.google.devtools.build.lib.query2.aquery.KeyedConfiguredTargetValue;
 import com.google.devtools.build.lib.query2.engine.ActionFilterFunction;
 import com.google.devtools.build.lib.query2.engine.FunctionExpression;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.Argument;
@@ -40,6 +40,7 @@ import com.google.devtools.build.lib.server.FailureDetails.ActionQuery.Code;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.skyframe.SequencedSkyframeExecutor;
 import com.google.devtools.build.lib.skyframe.actiongraph.v2.ActionGraphDump;
+import com.google.devtools.build.lib.skyframe.actiongraph.v2.AqueryConsumingOutputHandler;
 import com.google.devtools.build.lib.skyframe.actiongraph.v2.AqueryOutputHandler;
 import com.google.devtools.build.lib.skyframe.actiongraph.v2.AqueryOutputHandler.OutputType;
 import com.google.devtools.build.lib.skyframe.actiongraph.v2.InvalidAqueryOutputFormatException;
@@ -54,7 +55,7 @@ import java.util.regex.PatternSyntaxException;
 import javax.annotation.Nullable;
 
 /** Performs {@code aquery} processing. */
-public final class AqueryProcessor extends PostAnalysisQueryProcessor<KeyedConfiguredTargetValue> {
+public final class AqueryProcessor extends PostAnalysisQueryProcessor<ConfiguredTargetValue> {
   private final AqueryActionFilter actionFilters;
 
   public AqueryProcessor(
@@ -79,7 +80,8 @@ public final class AqueryProcessor extends PostAnalysisQueryProcessor<KeyedConfi
           ActionGraphProtoOutputFormatterCallback.constructAqueryOutputHandler(
               OutputType.fromString(aqueryOptions.outputFormat),
               queryRuntimeHelper.getOutputStreamForQueryOutput(),
-              printStream)) {
+              printStream,
+              aqueryOptions.parallelAqueryOutput)) {
         ActionGraphDump actionGraphDump =
             new ActionGraphDump(
                 aqueryOptions.includeCommandline,
@@ -90,7 +92,8 @@ public final class AqueryProcessor extends PostAnalysisQueryProcessor<KeyedConfi
                 aqueryOptions.includeFileWriteContents,
                 aqueryOutputHandler,
                 env.getReporter());
-        ((SequencedSkyframeExecutor) env.getSkyframeExecutor()).dumpSkyframeState(actionGraphDump);
+        dumpActionGraph(env, aqueryOutputHandler, actionGraphDump);
+
       } catch (InvalidAqueryOutputFormatException e) {
         String message =
             "--skyframe_state must be used with --output=proto|textproto|jsonproto. "
@@ -117,8 +120,22 @@ public final class AqueryProcessor extends PostAnalysisQueryProcessor<KeyedConfi
     }
   }
 
+  public static void dumpActionGraph(
+      CommandEnvironment env,
+      AqueryOutputHandler aqueryOutputHandler,
+      ActionGraphDump actionGraphDump)
+      throws CommandLineExpansionException, TemplateExpansionException, IOException {
+    if (aqueryOutputHandler instanceof AqueryConsumingOutputHandler) {
+      ((SequencedSkyframeExecutor) env.getSkyframeExecutor())
+          .dumpSkyframeStateInParallel(
+              actionGraphDump, (AqueryConsumingOutputHandler) aqueryOutputHandler);
+    } else {
+      ((SequencedSkyframeExecutor) env.getSkyframeExecutor()).dumpSkyframeState(actionGraphDump);
+    }
+  }
+
   @Override
-  protected PostAnalysisQueryEnvironment<KeyedConfiguredTargetValue> getQueryEnvironment(
+  protected PostAnalysisQueryEnvironment<ConfiguredTargetValue> getQueryEnvironment(
       BuildRequest request,
       CommandEnvironment env,
       TopLevelConfigurations topLevelConfigurations,

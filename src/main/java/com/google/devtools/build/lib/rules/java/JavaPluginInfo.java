@@ -18,6 +18,7 @@ import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.collect.nestedset.Depset;
+import com.google.devtools.build.lib.collect.nestedset.Depset.TypeException;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
@@ -60,7 +61,7 @@ public abstract class JavaPluginInfo extends NativeInfo
     @Override
     public JavaPluginInfoApi<Artifact, JavaPluginData, JavaOutput> javaPluginInfo(
         Sequence<?> runtimeDeps, Object processorClass, Object processorData, Boolean generatesApi)
-        throws EvalException {
+        throws EvalException, TypeException {
       NestedSet<String> processorClasses =
           processorClass == Starlark.NONE
               ? NestedSetBuilder.emptySet(Order.NAIVE_LINK_ORDER)
@@ -72,7 +73,7 @@ public abstract class JavaPluginInfo extends NativeInfo
               /* mergeSourceJars= */ true);
 
       NestedSet<Artifact> processorClasspath =
-          javaInfos.getProvider(JavaCompilationArgsProvider.class).getRuntimeJars();
+          javaInfos.getTransitiveRuntimeJars().getSet(Artifact.class);
 
       final NestedSet<Artifact> data;
       if (processorData instanceof Depset) {
@@ -137,17 +138,17 @@ public abstract class JavaPluginInfo extends NativeInfo
 
     @Override
     public Depset /*<FileApi>*/ getProcessorJarsForStarlark() {
-      return Depset.of(Artifact.TYPE, processorClasspath());
+      return Depset.of(Artifact.class, processorClasspath());
     }
 
     @Override
     public Depset /*<String>*/ getProcessorClassesForStarlark() {
-      return Depset.of(Depset.ElementType.STRING, processorClasses());
+      return Depset.of(String.class, processorClasses());
     }
 
     @Override
     public Depset /*<FileApi>*/ getProcessorDataForStarlark() {
-      return Depset.of(Artifact.TYPE, data());
+      return Depset.of(Artifact.class, data());
     }
 
     public boolean isEmpty() {

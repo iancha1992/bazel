@@ -47,6 +47,7 @@ import com.google.devtools.build.lib.runtime.commands.info.InstallBaseInfoItem;
 import com.google.devtools.build.lib.runtime.commands.info.JavaHomeInfoItem;
 import com.google.devtools.build.lib.runtime.commands.info.JavaRuntimeInfoItem;
 import com.google.devtools.build.lib.runtime.commands.info.JavaVirtualMachineInfoItem;
+import com.google.devtools.build.lib.runtime.commands.info.LocalResourcesInfoItem;
 import com.google.devtools.build.lib.runtime.commands.info.MakeInfoItem;
 import com.google.devtools.build.lib.runtime.commands.info.MaxHeapSizeInfoItem;
 import com.google.devtools.build.lib.runtime.commands.info.OutputBaseInfoItem;
@@ -58,6 +59,7 @@ import com.google.devtools.build.lib.runtime.commands.info.ServerPidInfoItem;
 import com.google.devtools.build.lib.runtime.commands.info.StarlarkSemanticsInfoItem;
 import com.google.devtools.build.lib.runtime.commands.info.UsedHeapSizeAfterGcInfoItem;
 import com.google.devtools.build.lib.runtime.commands.info.UsedHeapSizeInfoItem;
+import com.google.devtools.build.lib.runtime.commands.info.WorkerMetricsInfoItem;
 import com.google.devtools.build.lib.runtime.commands.info.WorkspaceInfoItem;
 import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
@@ -291,7 +293,9 @@ public class InfoCommand implements BlazeCommand {
             new DefaultsPackageInfoItem(),
             new BuildLanguageInfoItem(),
             new DefaultPackagePathInfoItem(commandOptions),
-            new StarlarkSemanticsInfoItem(commandOptions));
+            new StarlarkSemanticsInfoItem(commandOptions),
+            new WorkerMetricsInfoItem(),
+            new LocalResourcesInfoItem());
     ImmutableMap.Builder<String, InfoItem> result = new ImmutableMap.Builder<>();
     for (InfoItem item : hardwiredInfoItems) {
       result.put(item.getName(), item);

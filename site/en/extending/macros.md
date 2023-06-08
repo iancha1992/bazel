@@ -11,7 +11,7 @@ debugging, and conventions.
 A macro is a function called from the `BUILD` file that can instantiate rules.
 Macros are mainly used for encapsulation and code reuse of existing rules
 and other macros. By the end of the
-[loading phase](/rules/concepts#evaluation-model), macros don't exist anymore,
+[loading phase](/extending/concepts#evaluation-model), macros don't exist anymore,
 and Bazel sees only the concrete set of instantiated rules.
 
 ## Usage {:#usage}
@@ -125,7 +125,7 @@ genrule(
 ## Instantiating native rules {:#instantiating-native-rules}
 
 Native rules (rules that don't need a `load()` statement) can be
-instantiated from the [native](/rules/lib/native) module:
+instantiated from the [native](/rules/lib/toplevel/native) module:
 
 ```python
 def my_macro(name, visibility=None):
@@ -137,7 +137,7 @@ def my_macro(name, visibility=None):
 ```
 
 If you need to know the package name (for example, which `BUILD` file is calling the
-macro), use the function [native.package_name()](/rules/lib/native#package_name).
+macro), use the function [native.package_name()](/rules/lib/toplevel/native#package_name).
 Note that `native` can only be used in `.bzl` files, and not in `WORKSPACE` or
 `BUILD` files.
 
@@ -151,7 +151,7 @@ for macros that are meant to be used in other repositories, such as because they
 are part of a published Starlark ruleset.
 
 To get the same behavior as for Starlark rules, wrap the label strings with the
-[`Label`](/rules/lib/Label#Label) constructor:
+[`Label`](/rules/lib/builtins/Label#Label) constructor:
 
 ```python
 # @my_ruleset//rules:defs.bzl
@@ -191,7 +191,7 @@ def my_cc_wrapper(name, deps = [], **kwargs):
     the rule `foo` is created (due to a name conflict), which will show you the
     full stack trace.
 
-*   You can also use [print](/rules/lib/globals#print) for debugging. It displays
+*   You can also use [print](/rules/lib/globals/all#print) for debugging. It displays
     the message as a `DEBUG` log line during the loading phase. Except in rare
     cases, either remove `print` calls, or make them conditional under a
     `debugging` parameter that defaults to `False` before submitting the code to
@@ -199,7 +199,7 @@ def my_cc_wrapper(name, deps = [], **kwargs):
 
 ## Errors {:#errors}
 
-If you want to throw an error, use the [fail](/rules/lib/globals#fail) function.
+If you want to throw an error, use the [fail](/rules/lib/globals/all#fail) function.
 Explain clearly to the user what went wrong and how to fix their `BUILD` file.
 It is not possible to catch an error.
 

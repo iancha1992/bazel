@@ -111,7 +111,7 @@ If you are not getting the cache hit rate you are expecting, do the following:
 
    d. If `remote_accept_cached` is `false`, determine where it is being
       set to `false`: either at the command line or in a
-      [bazelrc](/docs/bazelrc#bazelrc-file-locations) file.
+      [bazelrc](/run/bazelrc#bazelrc-file-locations) file.
 
 ### Ensure caching across machines {:#caching-across-machines}
 
@@ -152,7 +152,7 @@ element containing all of the information from the action key, Thus, if the
 logs are identical then so are the action cache keys.
 
 To compare logs for two builds that are not sharing cache hits as expected,
-do the folowing:
+do the following:
 
 1. Get the execution logs from each build and store them as `/tmp/exec1.log` and
    `/tmp/exec2.log`.

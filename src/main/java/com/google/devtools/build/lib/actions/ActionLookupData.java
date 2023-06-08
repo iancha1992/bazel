@@ -20,25 +20,50 @@ import com.google.devtools.build.lib.skyframe.SkyFunctions;
 import com.google.devtools.build.skyframe.ExecutionPhaseSkyKey;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 
-/** Data that uniquely identifies an action. */
-public class ActionLookupData implements ExecutionPhaseSkyKey {
-
-  private final ActionLookupKey actionLookupKey;
-  private final int actionIndex;
-
-  private ActionLookupData(ActionLookupKey actionLookupKey, int actionIndex) {
-    this.actionLookupKey = Preconditions.checkNotNull(actionLookupKey);
-    this.actionIndex = actionIndex;
-  }
+/**
+ * Data that uniquely identifies an action.
+ *
+ * <p>{@link #getActionLookupKey} returns the {@link ActionLookupKey} to look up an {@link
+ * ActionLookupValue}. {@link #getActionIndex} returns the index of the action within {@link
+ * ActionLookupValue#getActions}.
+ *
+ * <p>To save memory, a custom subclass without an {@code int} field is used for the most common
+ * action indices [0-9].
+ */
+public abstract class ActionLookupData implements ExecutionPhaseSkyKey {
 
   /**
    * Creates a key for the result of action execution. Does <i>not</i> intern its results, so should
    * only be called once per {@code (actionLookupKey, actionIndex)} pair.
    */
-  public static ActionLookupData create(ActionLookupKey actionLookupKey, int actionIndex) {
-    return actionLookupKey.mayOwnShareableActions()
-        ? new ActionLookupData(actionLookupKey, actionIndex)
-        : createUnshareable(actionLookupKey, actionIndex);
+  public static ActionLookupData create(ActionLookupKeyOrProxy actionLookupKey, int actionIndex) {
+    if (!actionLookupKey.mayOwnShareableActions()) {
+      return createUnshareable(actionLookupKey, actionIndex);
+    }
+    switch (actionIndex) {
+      case 0:
+        return new ActionLookupData0(actionLookupKey);
+      case 1:
+        return new ActionLookupData1(actionLookupKey);
+      case 2:
+        return new ActionLookupData2(actionLookupKey);
+      case 3:
+        return new ActionLookupData3(actionLookupKey);
+      case 4:
+        return new ActionLookupData4(actionLookupKey);
+      case 5:
+        return new ActionLookupData5(actionLookupKey);
+      case 6:
+        return new ActionLookupData6(actionLookupKey);
+      case 7:
+        return new ActionLookupData7(actionLookupKey);
+      case 8:
+        return new ActionLookupData8(actionLookupKey);
+      case 9:
+        return new ActionLookupData9(actionLookupKey);
+      default:
+        return new ActionLookupDataN(actionLookupKey, actionIndex);
+    }
   }
 
   /**
@@ -46,11 +71,17 @@ public class ActionLookupData implements ExecutionPhaseSkyKey {
    * #valueIsShareable}.
    */
   public static ActionLookupData createUnshareable(
-      ActionLookupKey actionLookupKey, int actionIndex) {
+      ActionLookupKeyOrProxy actionLookupKey, int actionIndex) {
     return new UnshareableActionLookupData(actionLookupKey, actionIndex);
   }
 
-  public ActionLookupKey getActionLookupKey() {
+  private final ActionLookupKeyOrProxy actionLookupKey;
+
+  private ActionLookupData(ActionLookupKeyOrProxy actionLookupKey) {
+    this.actionLookupKey = Preconditions.checkNotNull(actionLookupKey);
+  }
+
+  public final ActionLookupKeyOrProxy getActionLookupKey() {
     return actionLookupKey;
   }
 
@@ -58,9 +89,7 @@ public class ActionLookupData implements ExecutionPhaseSkyKey {
    * Index of the action in question in the node keyed by {@link #getActionLookupKey}. Should be
    * passed to {@link ActionLookupValue#getAction}.
    */
-  public final int getActionIndex() {
-    return actionIndex;
-  }
+  public abstract int getActionIndex();
 
   public final Label getLabel() {
     return actionLookupKey.getLabel();
@@ -70,7 +99,7 @@ public class ActionLookupData implements ExecutionPhaseSkyKey {
   public final int hashCode() {
     int hash = 1;
     hash = 37 * hash + actionLookupKey.hashCode();
-    hash = 37 * hash + Integer.hashCode(actionIndex);
+    hash = 37 * hash + Integer.hashCode(getActionIndex());
     hash = 37 * hash + Boolean.hashCode(valueIsShareable());
     return hash;
   }
@@ -84,26 +113,150 @@ public class ActionLookupData implements ExecutionPhaseSkyKey {
       return false;
     }
     ActionLookupData that = (ActionLookupData) obj;
-    return this.actionIndex == that.actionIndex
-        && this.actionLookupKey.equals(that.actionLookupKey)
+    return getActionIndex() == that.getActionIndex()
+        && actionLookupKey.equals(that.actionLookupKey)
         && valueIsShareable() == that.valueIsShareable();
   }
 
   @Override
-  public String toString() {
+  public final String toString() {
     return MoreObjects.toStringHelper(this)
         .add("actionLookupKey", actionLookupKey)
-        .add("actionIndex", actionIndex)
+        .add("actionIndex", getActionIndex())
         .toString();
   }
 
   @Override
-  public SkyFunctionName functionName() {
+  public final SkyFunctionName functionName() {
     return SkyFunctions.ACTION_EXECUTION;
   }
 
-  private static final class UnshareableActionLookupData extends ActionLookupData {
-    private UnshareableActionLookupData(ActionLookupKey actionLookupKey, int actionIndex) {
+  private static final class ActionLookupData0 extends ActionLookupData {
+    private ActionLookupData0(ActionLookupKeyOrProxy actionLookupKey) {
+      super(actionLookupKey);
+    }
+
+    @Override
+    public int getActionIndex() {
+      return 0;
+    }
+  }
+
+  private static final class ActionLookupData1 extends ActionLookupData {
+    private ActionLookupData1(ActionLookupKeyOrProxy actionLookupKey) {
+      super(actionLookupKey);
+    }
+
+    @Override
+    public int getActionIndex() {
+      return 1;
+    }
+  }
+
+  private static final class ActionLookupData2 extends ActionLookupData {
+    private ActionLookupData2(ActionLookupKeyOrProxy actionLookupKey) {
+      super(actionLookupKey);
+    }
+
+    @Override
+    public int getActionIndex() {
+      return 2;
+    }
+  }
+
+  private static final class ActionLookupData3 extends ActionLookupData {
+    private ActionLookupData3(ActionLookupKeyOrProxy actionLookupKey) {
+      super(actionLookupKey);
+    }
+
+    @Override
+    public int getActionIndex() {
+      return 3;
+    }
+  }
+
+  private static final class ActionLookupData4 extends ActionLookupData {
+    private ActionLookupData4(ActionLookupKeyOrProxy actionLookupKey) {
+      super(actionLookupKey);
+    }
+
+    @Override
+    public int getActionIndex() {
+      return 4;
+    }
+  }
+
+  private static final class ActionLookupData5 extends ActionLookupData {
+    private ActionLookupData5(ActionLookupKeyOrProxy actionLookupKey) {
+      super(actionLookupKey);
+    }
+
+    @Override
+    public int getActionIndex() {
+      return 5;
+    }
+  }
+
+  private static final class ActionLookupData6 extends ActionLookupData {
+    private ActionLookupData6(ActionLookupKeyOrProxy actionLookupKey) {
+      super(actionLookupKey);
+    }
+
+    @Override
+    public int getActionIndex() {
+      return 6;
+    }
+  }
+
+  private static final class ActionLookupData7 extends ActionLookupData {
+    private ActionLookupData7(ActionLookupKeyOrProxy actionLookupKey) {
+      super(actionLookupKey);
+    }
+
+    @Override
+    public int getActionIndex() {
+      return 7;
+    }
+  }
+
+  private static final class ActionLookupData8 extends ActionLookupData {
+    private ActionLookupData8(ActionLookupKeyOrProxy actionLookupKey) {
+      super(actionLookupKey);
+    }
+
+    @Override
+    public int getActionIndex() {
+      return 8;
+    }
+  }
+
+  private static final class ActionLookupData9 extends ActionLookupData {
+    private ActionLookupData9(ActionLookupKeyOrProxy actionLookupKey) {
+      super(actionLookupKey);
+    }
+
+    @Override
+    public int getActionIndex() {
+      return 9;
+    }
+  }
+
+  private static class ActionLookupDataN extends ActionLookupData {
+    private final int actionIndex;
+
+    private ActionLookupDataN(ActionLookupKeyOrProxy actionLookupKey, int actionIndex) {
+      super(actionLookupKey);
+      this.actionIndex = actionIndex;
+    }
+
+    @Override
+    public final int getActionIndex() {
+      return actionIndex;
+    }
+  }
+
+  private static final class UnshareableActionLookupData extends ActionLookupDataN {
+    private UnshareableActionLookupData(ActionLookupKeyOrProxy actionLookupKey, int actionIndex) {
       super(actionLookupKey, actionIndex);
     }
 

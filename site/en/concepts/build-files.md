@@ -10,7 +10,14 @@ build dependency graph abstractly. This section describes the concrete syntax
 used to define a package.
 
 By definition, every package contains a `BUILD` file, which is a short
-program. `BUILD` files are evaluated using an imperative language,
+program.
+
+Note: The `BUILD` file can be named either `BUILD` or `BUILD.bazel`. If both
+files exist, `BUILD.bazel` takes precedence over `BUILD`.
+For simplicity's sake, the documentation refers to these files simply as `BUILD`
+files.
+
+`BUILD` files are evaluated using an imperative language,
 [Starlark](https://github.com/bazelbuild/starlark/){: .external}.
 
 They are interpreted as a sequential list of statements.
@@ -36,7 +43,7 @@ allowed in `BUILD` files; instead list all the arguments explicitly.
 Crucially, programs in Starlark can't perform arbitrary I/O. This invariant
 makes the interpretation of `BUILD` files hermetic — dependent only on a known
 set of inputs, which is essential for ensuring that builds are reproducible.
-For more details, see [Hermeticity](/concepts/hermeticity).
+For more details, see [Hermeticity](/basics/hermeticity).
 
 `BUILD` files should be written using only ASCII characters, although
 technically they are interpreted using the Latin-1 character set.

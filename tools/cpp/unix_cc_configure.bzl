@@ -1,6 +1,6 @@
 # pylint: disable=g-bad-file-header
 # Copyright 2016 The Bazel Authors. All rights reserved.
-#
+
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -118,7 +118,7 @@ def _cxx_inc_convert(path):
         path = path[:-_OSX_FRAMEWORK_SUFFIX_LEN].strip()
     return path
 
-def _get_cxx_include_directories(repository_ctx, cc, lang_flag, additional_flags = []):
+def _get_cxx_include_directories(repository_ctx, print_resource_dir_supported, cc, lang_flag, additional_flags = []):
     """Compute the list of C++ include directories."""
     result = repository_ctx.execute([cc, "-E", lang_flag, "-", "-v"] + additional_flags)
     index1 = result.stderr.find(_INC_DIR_MARKER_BEGIN)
@@ -141,7 +141,7 @@ def _get_cxx_include_directories(repository_ctx, cc, lang_flag, additional_flags
         for p in inc_dirs.split("\n")
     ]
 
-    if _is_compiler_option_supported(repository_ctx, cc, "-print-resource-dir"):
+    if print_resource_dir_supported:
         resource_dir = repository_ctx.execute(
             [cc, "-print-resource-dir"] + additional_flags,
         ).stdout.strip() + "/share"
@@ -384,7 +384,7 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
     )
     if darwin:
         overriden_tools["gcc"] = "cc_wrapper.sh"
-        overriden_tools["ar"] = "/usr/bin/libtool"
+        overriden_tools["ar"] = _find_generic(repository_ctx, "libtool", "LIBTOOL", overriden_tools)
     auto_configure_warning_maybe(repository_ctx, "CC used: " + str(cc))
     tool_paths = _get_tool_paths(repository_ctx, overriden_tools)
     cc_toolchain_identifier = escape_string(get_env_var(
@@ -416,7 +416,7 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
     cxx_opts = split_escaped(get_env_var(
         repository_ctx,
         "BAZEL_CXXOPTS",
-        "-std=c++0x",
+        "-std=c++14",
         False,
     ), ":")
 
@@ -452,36 +452,50 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
         if ld_path.dirname != cc_path.dirname:
             bin_search_flags.append("-B" + str(ld_path.dirname))
     coverage_compile_flags, coverage_link_flags = _coverage_flags(repository_ctx, darwin)
+    print_resource_dir_supported = _is_compiler_option_supported(
+        repository_ctx,
+        cc,
+        "-print-resource-dir",
+    )
+    no_canonical_prefixes_opt = _get_no_canonical_prefixes_opt(repository_ctx, cc)
     builtin_include_directories = _uniq(
-        _get_cxx_include_directories(repository_ctx, cc, "-xc", conly_opts) +
-        _get_cxx_include_directories(repository_ctx, cc, "-xc++", cxx_opts) +
+        _get_cxx_include_directories(repository_ctx, print_resource_dir_supported, cc, "-xc", conly_opts) +
+        _get_cxx_include_directories(repository_ctx, print_resource_dir_supported, cc, "-xc++", cxx_opts) +
         _get_cxx_include_directories(
             repository_ctx,
+            print_resource_dir_supported,
             cc,
             "-xc++",
             cxx_opts + ["-stdlib=libc++"],
         ) +
         _get_cxx_include_directories(
             repository_ctx,
+            print_resource_dir_supported,
             cc,
             "-xc",
-            _get_no_canonical_prefixes_opt(repository_ctx, cc),
+            no_canonical_prefixes_opt,
         ) +
         _get_cxx_include_directories(
             repository_ctx,
+            print_resource_dir_supported,
             cc,
             "-xc++",
-            cxx_opts + _get_no_canonical_prefixes_opt(repository_ctx, cc),
+            cxx_opts + no_canonical_prefixes_opt,
         ) +
         _get_cxx_include_directories(
             repository_ctx,
+            print_resource_dir_supported,
             cc,
             "-xc++",
-            cxx_opts + _get_no_canonical_prefixes_opt(repository_ctx, cc) + ["-stdlib=libc++"],
-        ),
+            cxx_opts + no_canonical_prefixes_opt + ["-stdlib=libc++"],
+        ) +
+        # Always included in case the user has Xcode + the CLT installed, both
+        # paths can be used interchangeably
+        ["/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"],
     )
 
-    if is_clang:
+    generate_modulemap = is_clang and not darwin
+    if generate_modulemap:
         repository_ctx.file("module.modulemap", _generate_system_module_map(
             repository_ctx,
             builtin_include_directories,
@@ -495,7 +509,7 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
         {
             "%{cc_toolchain_identifier}": cc_toolchain_identifier,
             "%{name}": cpu_value,
-            "%{modulemap}": ("\":module.modulemap\"" if is_clang else "None"),
+            "%{modulemap}": ("\":module.modulemap\"" if generate_modulemap else "None"),
             "%{cc_compiler_deps}": get_starlark_list([":builtin_include_directory_paths"] + (
                 [":cc_wrapper"] if darwin else []
             )),
@@ -583,8 +597,6 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
                 "-z",
             ) + (
                 [
-                    "-undefined",
-                    "dynamic_lookup",
                     "-headerpad_max_install_names",
                 ] if darwin else bin_search_flags + [
                     # Gold linker only? Can we enable this by default?
@@ -625,7 +637,7 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
                 ],
             ),
             "%{opt_link_flags}": get_starlark_list(
-                [] if darwin else _add_linker_option_if_supported(
+                ["-Wl,-dead_strip"] if darwin else _add_linker_option_if_supported(
                     repository_ctx,
                     cc,
                     "-Wl,--gc-sections",
