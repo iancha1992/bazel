@@ -3,6 +3,7 @@ name: cherry-picker
 on:
   pull_request:
     types: [closed]
+    branches: [ianpresentation]
   issues:
     types: [closed, milestoned]
 
