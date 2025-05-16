@@ -56,3 +56,11 @@ disclosure timeline.
 See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 [![Build status](https://badge.buildkite.com/1fd282f8ad98c3fb10758a821e5313576356709dd7d11e9618.svg?status=master)](https://buildkite.com/bazel/bazel-bazel)
+
+* In Bazel older than 7.0.0 but newer than 0.28: Enable the Clang toolchain by
+  a build flag `--compiler=clang-cl`.
+
+  If your build sets the flag
+  [\-\-incompatible_enable_cc_toolchain_resolution]
+  (https://github.com/bazelbuild/bazel/issues/7260){: .external}
+  to `true`, then use the approach for Bazel 7.0.0.
