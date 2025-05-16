@@ -61,6 +61,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md)
   a build flag `--compiler=clang-cl`.
 
   If your build sets the flag
-  [\-\-incompatible_enable_cc_toolchain_resolution]
-  (https://github.com/bazelbuild/bazel/issues/7260){: .external}
-  to `true`, then use the approach for Bazel 7.0.0.
+  [\-\-incompatible_enable_cc_toolchain_resolution](https://github.com/bazelbuild/bazel/issues/7260){: .external}
