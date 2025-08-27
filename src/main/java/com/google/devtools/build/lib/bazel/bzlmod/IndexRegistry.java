@@ -149,7 +149,9 @@ public class IndexRegistry implements Registry {
       // We intentionally don't check knownFileHashesMode here: The checksums of module files are
       // always needed for the remote_module_file_integrity attributes of the http_archive backing
       // the module repo.
-      if (useChecksum) {
+      if ((knownFileHashesMode == KnownFileHashesMode.USE_AND_UPDATE
+              || knownFileHashesMode == KnownFileHashesMode.USE_IMMUTABLE_AND_UPDATE)
+          && useChecksum) {
         eventHandler.post(RegistryFileDownloadEvent.create(url, maybeContent));
       }
     }
