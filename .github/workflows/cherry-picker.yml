@@ -5,6 +5,8 @@ on:
     types: [closed]
   issues:
     types: [closed, milestoned]
+  commit_comment:
+    types: [created]
 
 permissions:
   contents: read
@@ -62,3 +64,49 @@ jobs:
           issue-title: ${{ github.event.issue.title }}
           issue-body: ${{ github.event.issue.body }}
           is-prod: False
+
+  cherry-picker-on-commit-comment:
+    if: github.event_name == 'commit_comment' && startsWith(github.event.comment.body, 'bazel-io fork ')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@63c24ba6bd7ba022e95695ff85de572c04a18142
+        with:
+          egress-policy: audit
+
+      - name: Fetch Commit and Version Details
+        id: info
+        env:
+          GH_TOKEN: ${{ secrets.BAZEL_IO_TOKEN }}
+        run: |
+          # 1. Extract version from comment (e.g., "bazel-io fork 10.2.3" -> "10.2.3")
+          VERSION=$(echo "${{ github.event.comment.body }}" | sed 's/bazel-io fork //')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # 2. Fetch commit title and message body via API
+          COMMIT_SHA=${{ github.event.comment.commit_id }}
+          FULL_MSG=$(gh api repos/${{ github.repository }}/commits/$COMMIT_SHA --jq '.commit.message')
+
+          # Separate title (1st line) and body (rest)
+          TITLE=$(echo "$FULL_MSG" | head -n 1)
+          BODY=$(echo "$FULL_MSG" | tail -n +3)
+
+          # Use delimiters to handle multi-line bodies in outputs
+          {
+            echo "title=$TITLE"
+            echo "body<<EOF"
+            echo "### Commit IDs"
+            echo "$COMMIT_SHA"
+            echo ""
+            echo "$BODY"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      # - name: Run cherrypicker on commit comment
+      #   uses: iancha1992/continuous-integration/actions/cherry_picker@updatelockfile_PRs
+      #   with:
+      #     triggered-on: ondemand
+      #     milestone-title: ${{ steps.info.outputs.version }}
+      #     issue-title: ${{ steps.info.outputs.title }}
+      #     issue-body: ${{ steps.info.outputs.body }}
+      #     is-prod: False
