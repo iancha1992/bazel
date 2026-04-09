@@ -32,3 +32,19 @@ sh_test(
         "@bazel_tools//tools/bash/runfiles",
     ],
 )
+
+sh_test(
+    name = "linux-sandbox_test",
+    srcs = ["linux-sandbox_test.sh"],
+    data = [
+        "//src/main/tools:linux-sandbox",
+    ],
+    tags = [
+        "no_macos",
+        "no_windows",
+    ],
+    deps = [
+        "//src/test/shell:bashunit",
+        "@bazel_tools//tools/bash/runfiles",
+    ],
+)
