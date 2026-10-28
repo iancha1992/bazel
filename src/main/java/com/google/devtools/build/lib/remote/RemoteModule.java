@@ -1308,8 +1308,7 @@ public final class RemoteModule extends BlazeModule {
     builder.setActionExecutionSalt(computeActionExecutionSalt(remoteOptions));
   }
 
-  @VisibleForTesting
-  static String computeActionExecutionSalt(RemoteOptions remoteOptions) {
+  private static String computeActionExecutionSalt(RemoteOptions remoteOptions) {
     Fingerprint fp = new Fingerprint();
 
     // When building without a remote cache following a build with one, cached actions may reference
@@ -1327,18 +1326,6 @@ public final class RemoteModule extends BlazeModule {
     // shouldn't be too bad, as we don't expect the defaults to change very often.
     fp.addStringMap(
         remoteOptions != null ? remoteOptions.getRemoteDefaultExecProperties() : ImmutableMap.of());
-
-    // When switching cache endpoints/instances across invocations, cached remote actions reference
-    // blobs stored in the previous cache instance which cannot be downloaded from the new cache
-    // instance. See https://github.com/bazelbuild/bazel/issues/23780.
-    if (remoteOptions != null) {
-      fp.addNullableString(remoteOptions.remoteCache);
-      fp.addNullableString(remoteOptions.remoteExecutor);
-      fp.addNullableString(remoteOptions.remoteDownloader);
-      fp.addNullableString(remoteOptions.remoteInstanceName);
-      fp.addNullableString(remoteOptions.remoteBytestreamUriPrefix);
-      fp.addNullableString(remoteOptions.remoteProxy);
-    }
 
     return fp.hexDigestAndReset();
   }
